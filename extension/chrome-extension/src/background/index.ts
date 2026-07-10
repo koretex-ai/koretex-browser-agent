@@ -48,6 +48,8 @@ async function buildChatMessages(taskId: string, task: string): Promise<OllamaCh
   if (session) {
     for (const message of session.messages) {
       if (message.actor === Actors.USER) {
+        // Slash commands drive the executor, not the model — keep them out of chat context
+        if (message.content.startsWith('/')) continue;
         messages.push({ role: 'user', content: message.content });
       } else if (message.actor === Actors.ASSISTANT) {
         messages.push({ role: 'assistant', content: message.content });

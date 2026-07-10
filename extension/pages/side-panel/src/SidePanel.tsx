@@ -236,6 +236,15 @@ const SidePanel = () => {
       setInputEnabled(false);
       setShowStopButton(false);
 
+      // Commands need a session too: it keys the trajectory log and persists
+      // the command exchange into chat history
+      if (!sessionIdRef.current) {
+        const newSession = await chatHistoryStore.createSession(command.substring(0, 50));
+        setCurrentSessionId(newSession.id);
+        sessionIdRef.current = newSession.id;
+        setIsFollowUpMode(true);
+      }
+
       appendMessage({
         actor: Actors.USER,
         content: command,
