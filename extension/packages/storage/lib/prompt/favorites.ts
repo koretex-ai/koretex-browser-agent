@@ -2,21 +2,23 @@ import { StorageEnum } from '../base/enums';
 import { createStorage } from '../base/base';
 import type { BaseStorage } from '../base/types';
 
+// Exact contents of the Nanobrowser-era defaults, removed by migration on load
+const legacyDefaultContents = [
+  '- Go to https://huggingface.co/papers and click through each of the first 3 papers.\n- For each paper:\n  - Record the title, URL and upvotes\n  - Summarise the abstract section\n- Finally, compile together a summary of all 3 papers, ranked by upvotes',
+  'Follow us at https://x.com/nanobrowser_ai to stay updated on the latest news and features!',
+  "Open the Nanobrowser repository at https://github.com/nanobrowser/nanobrowser and check if you've already starred it. If not, please support us by giving us a star!",
+];
+
 // Template data
 const defaultFavoritePrompts = [
   {
-    title: '📚 Explore AI Papers',
-    content:
-      '- Go to https://huggingface.co/papers and click through each of the first 3 papers.\n- For each paper:\n  - Record the title, URL and upvotes\n  - Summarise the abstract section\n- Finally, compile together a summary of all 3 papers, ranked by upvotes',
-  },
-  {
     title: '🐦 Follow us on X/Twitter!',
-    content: 'Follow us at https://x.com/nanobrowser_ai to stay updated on the latest news and features!',
+    content: 'Follow us at https://x.com/koretexai to stay updated on the latest news and features!',
   },
   {
     title: '🌟 Star us on GitHub!',
     content:
-      "Open the Nanobrowser repository at https://github.com/nanobrowser/nanobrowser and check if you've already starred it. If not, please support us by giving us a star!",
+      "Open the Local Browser Use repository at https://github.com/koretex-ai/local-browser-use and check if you've already starred it. If not, please support us by giving us a star!",
   },
 ];
 
@@ -145,7 +147,26 @@ export function createFavoritesStorage(): FavoritePromptsStorage {
     },
 
     getAllPrompts: async (): Promise<FavoritePrompt[]> => {
-      const currentState = await favoritesStorage.get();
+      let currentState = await favoritesStorage.get();
+
+      // One-time migration: replace persisted Nanobrowser-era defaults with ours
+      // (exact-content match, so user-created bookmarks are untouched)
+      if (currentState.prompts.some(prompt => legacyDefaultContents.includes(prompt.content))) {
+        await favoritesStorage.set(prev => ({
+          ...prev,
+          prompts: prev.prompts.filter(prompt => !legacyDefaultContents.includes(prompt.content)),
+        }));
+        for (const prompt of defaultFavoritePrompts) {
+          const { prompts: existing } = await favoritesStorage.get();
+          if (existing.some(p => p.content === prompt.content)) continue;
+          await favoritesStorage.set(prev => {
+            const id = prev.nextId;
+            return { nextId: id + 1, prompts: [{ id, ...prompt }, ...prev.prompts] };
+          });
+        }
+        currentState = await favoritesStorage.get();
+      }
+
       let prompts = currentState.prompts;
 
       // Check if storage is in initial state (empty prompts array and nextId=1)
