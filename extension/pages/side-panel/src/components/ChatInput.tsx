@@ -77,7 +77,7 @@ export default function ChatInput({
   return (
     <form
       onSubmit={handleSubmit}
-      className={`overflow-hidden rounded-lg border transition-colors ${disabled ? 'cursor-not-allowed' : 'focus-within:border-sky-400 hover:border-sky-400'} ${isDarkMode ? 'border-slate-700' : ''}`}
+      className={`overflow-hidden rounded-lg border transition-colors ${disabled ? 'cursor-not-allowed' : 'focus-within:border-[#2BE87D] hover:border-[#2BE87D]'} ${isDarkMode ? 'border-[#1F7A4A]/50' : ''}`}
       aria-label={t('chat_input_form')}>
       <div className="flex flex-col">
         <textarea
@@ -91,10 +91,10 @@ export default function ChatInput({
           className={`w-full resize-none border-none p-2 focus:outline-none ${
             disabled
               ? isDarkMode
-                ? 'cursor-not-allowed bg-slate-800 text-gray-400'
+                ? 'cursor-not-allowed bg-[#0E1D14] text-gray-400'
                 : 'cursor-not-allowed bg-gray-100 text-gray-500'
               : isDarkMode
-                ? 'bg-slate-800 text-gray-200'
+                ? 'bg-[#0E1D14] text-gray-200'
                 : 'bg-white'
           }`}
           placeholder={t('chat_input_placeholder')}
@@ -103,7 +103,7 @@ export default function ChatInput({
 
         <div
           className={`flex items-center justify-end px-2 py-1.5 ${
-            disabled ? (isDarkMode ? 'bg-slate-800' : 'bg-gray-100') : isDarkMode ? 'bg-slate-800' : 'bg-white'
+            disabled ? (isDarkMode ? 'bg-[#0E1D14]' : 'bg-gray-100') : isDarkMode ? 'bg-[#0E1D14]' : 'bg-white'
           }`}>
           {showStopButton ? (
             <button
@@ -117,7 +117,7 @@ export default function ChatInput({
               type="submit"
               disabled={isSendButtonDisabled}
               aria-disabled={isSendButtonDisabled}
-              className={`rounded-md bg-[#19C2FF] px-3 py-1 text-white transition-colors hover:enabled:bg-[#0073DC] ${isSendButtonDisabled ? 'cursor-not-allowed opacity-50' : ''}`}>
+              className={`rounded-md bg-[#2BE87D] px-3 py-1 font-medium text-[#06130C] transition-colors hover:enabled:bg-[#59F09C] ${isSendButtonDisabled ? 'cursor-not-allowed opacity-50' : ''}`}>
               {t('chat_buttons_send')}
             </button>
           )}

@@ -2,16 +2,16 @@ export const ACTOR_PROFILES = {
   user: {
     name: 'User',
     icon: 'icons/user.svg',
-    iconBackground: '#4CAF50',
+    iconBackground: '#1F9A57',
   },
   system: {
     name: 'System',
     icon: 'icons/system.svg',
-    iconBackground: '#2196F3',
+    iconBackground: '#17553A',
   },
   assistant: {
     name: 'Assistant',
     icon: 'icons/navigator.svg',
-    iconBackground: '#40A9FF',
+    iconBackground: '#2BE87D',
   },
 } as const;

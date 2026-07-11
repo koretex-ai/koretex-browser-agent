@@ -30,7 +30,8 @@ const SidePanel = () => {
   const [chatSessions, setChatSessions] = useState<Array<{ id: string; title: string; createdAt: number }>>([]);
   const [isFollowUpMode, setIsFollowUpMode] = useState(false);
   const [isHistoricalSession, setIsHistoricalSession] = useState(false);
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  // Always-dark theme keyed to the logo
+  const isDarkMode = true;
   const [favoritePrompts, setFavoritePrompts] = useState<FavoritePrompt[]>([]);
   // null = not streaming; '' = waiting for first token; otherwise partial reply
   const [streamingText, setStreamingText] = useState<string | null>(null);
@@ -39,19 +40,6 @@ const SidePanel = () => {
   const heartbeatIntervalRef = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const setInputTextRef = useRef<((text: string) => void) | null>(null);
-
-  // Check for dark mode preference
-  useEffect(() => {
-    const darkModeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    setIsDarkMode(darkModeMediaQuery.matches);
-
-    const handleChange = (e: MediaQueryListEvent) => {
-      setIsDarkMode(e.matches);
-    };
-
-    darkModeMediaQuery.addEventListener('change', handleChange);
-    return () => darkModeMediaQuery.removeEventListener('change', handleChange);
-  }, []);
 
   useEffect(() => {
     sessionIdRef.current = currentSessionId;
@@ -548,14 +536,14 @@ const SidePanel = () => {
   return (
     <div>
       <div
-        className={`flex h-screen flex-col ${isDarkMode ? 'bg-slate-900' : "bg-[url('/bg.jpg')] bg-cover bg-no-repeat"} overflow-hidden border ${isDarkMode ? 'border-sky-800' : 'border-[rgb(186,230,253)]'} rounded-2xl`}>
+        className="flex h-screen flex-col overflow-hidden rounded-2xl border border-[#1F7A4A]/40 bg-[#0A150F]">
         <header className="header relative">
           <div className="header-logo">
             {showHistory ? (
               <button
                 type="button"
                 onClick={() => handleBackToChat(false)}
-                className={`${isDarkMode ? 'text-sky-400 hover:text-sky-300' : 'text-sky-400 hover:text-sky-500'} cursor-pointer`}
+                className={`${isDarkMode ? 'text-[#2BE87D] hover:text-[#59F09C]' : 'text-[#2BE87D] hover:text-[#59F09C]'} cursor-pointer`}
                 aria-label={t('nav_back_a11y')}>
                 {t('nav_back')}
               </button>
@@ -570,7 +558,7 @@ const SidePanel = () => {
                   type="button"
                   onClick={handleNewChat}
                   onKeyDown={e => e.key === 'Enter' && handleNewChat()}
-                  className={`header-icon ${isDarkMode ? 'text-sky-400 hover:text-sky-300' : 'text-sky-400 hover:text-sky-500'} cursor-pointer`}
+                  className={`header-icon ${isDarkMode ? 'text-[#2BE87D] hover:text-[#59F09C]' : 'text-[#2BE87D] hover:text-[#59F09C]'} cursor-pointer`}
                   aria-label={t('nav_newChat_a11y')}
                   tabIndex={0}>
                   <PiPlusBold size={20} />
@@ -579,7 +567,7 @@ const SidePanel = () => {
                   type="button"
                   onClick={handleLoadHistory}
                   onKeyDown={e => e.key === 'Enter' && handleLoadHistory()}
-                  className={`header-icon ${isDarkMode ? 'text-sky-400 hover:text-sky-300' : 'text-sky-400 hover:text-sky-500'} cursor-pointer`}
+                  className={`header-icon ${isDarkMode ? 'text-[#2BE87D] hover:text-[#59F09C]' : 'text-[#2BE87D] hover:text-[#59F09C]'} cursor-pointer`}
                   aria-label={t('nav_loadHistory_a11y')}
                   tabIndex={0}>
                   <GrHistory size={20} />
@@ -590,7 +578,7 @@ const SidePanel = () => {
               type="button"
               onClick={() => chrome.runtime.openOptionsPage()}
               onKeyDown={e => e.key === 'Enter' && chrome.runtime.openOptionsPage()}
-              className={`header-icon ${isDarkMode ? 'text-sky-400 hover:text-sky-300' : 'text-sky-400 hover:text-sky-500'} cursor-pointer`}
+              className={`header-icon ${isDarkMode ? 'text-[#2BE87D] hover:text-[#59F09C]' : 'text-[#2BE87D] hover:text-[#59F09C]'} cursor-pointer`}
               aria-label={t('nav_settings_a11y')}
               tabIndex={0}>
               <FiSettings size={20} />
@@ -613,7 +601,7 @@ const SidePanel = () => {
             {displayMessages.length === 0 && (
               <>
                 <div
-                  className={`border-t ${isDarkMode ? 'border-sky-900' : 'border-sky-100'} mb-2 p-2 shadow-sm backdrop-blur-sm`}>
+                  className={`border-t ${isDarkMode ? 'border-[#123D2B]' : 'border-[#123D2B]'} mb-2 p-2 shadow-sm backdrop-blur-sm`}>
                   <ChatInput
                     onSendMessage={handleSendMessage}
                     onStopTask={handleStopTask}
@@ -639,14 +627,14 @@ const SidePanel = () => {
             )}
             {displayMessages.length > 0 && (
               <div
-                className={`scrollbar-gutter-stable flex-1 overflow-x-hidden overflow-y-scroll scroll-smooth p-2 ${isDarkMode ? 'bg-slate-900/80' : ''}`}>
+                className={`scrollbar-gutter-stable flex-1 overflow-x-hidden overflow-y-scroll scroll-smooth p-2 ${isDarkMode ? 'bg-[#0A150F]/80' : ''}`}>
                 <MessageList messages={displayMessages} isDarkMode={isDarkMode} />
                 <div ref={messagesEndRef} />
               </div>
             )}
             {displayMessages.length > 0 && (
               <div
-                className={`border-t ${isDarkMode ? 'border-sky-900' : 'border-sky-100'} p-2 shadow-sm backdrop-blur-sm`}>
+                className={`border-t ${isDarkMode ? 'border-[#123D2B]' : 'border-[#123D2B]'} p-2 shadow-sm backdrop-blur-sm`}>
                 <ChatInput
                   onSendMessage={handleSendMessage}
                   onStopTask={handleStopTask}

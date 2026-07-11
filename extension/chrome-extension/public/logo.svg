@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" fill="#0A150F"/>
+  <!-- hexagon wireframe: right edges brighter, left edges dimmer -->
+  <g stroke-width="3" fill="none">
+    <path d="M64 22 L100.4 43 L100.4 85 L64 106" stroke="#1F7A4A" opacity="0.55"/>
+    <path d="M64 22 L27.6 43 L27.6 85 L64 106" stroke="#17553A" opacity="0.5"/>
+    <path d="M27.6 43 L100.4 85 M27.6 85 L100.4 43" stroke="#123D2B" opacity="0.45"/>
+  </g>
+  <!-- K spokes -->
+  <g stroke="#2BE87D" stroke-width="9" stroke-linecap="round">
+    <line x1="64" y1="22" x2="64" y2="106"/>
+    <line x1="64" y1="64" x2="100.4" y2="43"/>
+    <line x1="64" y1="64" x2="100.4" y2="85"/>
+  </g>
+  <!-- nodes -->
+  <g fill="#2BE87D">
+    <circle cx="64" cy="22" r="10"/>
+    <circle cx="64" cy="106" r="10"/>
+    <circle cx="100.4" cy="43" r="10"/>
+    <circle cx="100.4" cy="85" r="10"/>
+  </g>
+  <g fill="#1F9A57" opacity="0.85">
+    <circle cx="27.6" cy="43" r="6"/>
+    <circle cx="27.6" cy="85" r="6"/>
+  </g>
+  <circle cx="64" cy="64" r="13.5" fill="#E9FBF1"/>
+</svg>

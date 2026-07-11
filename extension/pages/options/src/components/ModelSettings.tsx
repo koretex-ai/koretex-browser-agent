@@ -54,7 +54,7 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
   };
 
   const inputClass = `w-full rounded-md border p-2 text-sm ${
-    isDarkMode ? 'border-slate-600 bg-slate-700 text-gray-200' : 'border-gray-300 bg-white text-gray-800'
+    isDarkMode ? 'border-[#1F7A4A]/50 bg-[#12251A] text-gray-200' : 'border-gray-300 bg-white text-gray-800'
   }`;
   const labelClass = `mb-1 block text-sm font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`;
 
@@ -83,7 +83,7 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
           <button
             type="button"
             onClick={() => testConnection(baseUrl.replace(/\/$/, ''))}
-            className="shrink-0 rounded-md bg-sky-500 px-3 py-1 text-sm text-white transition-colors hover:bg-sky-600">
+            className="shrink-0 rounded-md bg-[#2BE87D] px-3 py-1 text-sm font-medium text-[#06130C] transition-colors hover:bg-[#59F09C]">
             Test
           </button>
         </div>
@@ -91,7 +91,7 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
           <p className={`mt-1 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Connecting…</p>
         )}
         {connection.state === 'ok' && (
-          <p className="mt-1 text-sm text-green-600">
+          <p className="mt-1 text-sm text-[#2BE87D]">
             Connected — {connection.models.length} model{connection.models.length === 1 ? '' : 's'} available
           </p>
         )}
@@ -161,10 +161,10 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
         <button
           type="button"
           onClick={handleSave}
-          className="rounded-md bg-sky-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-600">
+          className="rounded-md bg-[#2BE87D] px-4 py-2 text-sm font-medium text-[#06130C] transition-colors hover:bg-[#59F09C]">
           Save
         </button>
-        {saved && <span className="text-sm text-green-600">Saved</span>}
+        {saved && <span className="text-sm text-[#2BE87D]">Saved</span>}
       </div>
     </section>
   );

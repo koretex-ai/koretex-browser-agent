@@ -40,7 +40,7 @@ function MessageBlock({ message, isSameActor, isDarkMode = false }: MessageBlock
     <div
       className={`flex max-w-full gap-3 ${
         !isSameActor
-          ? `mt-4 border-t ${isDarkMode ? 'border-sky-800/50' : 'border-sky-200/50'} pt-4 first:mt-0 first:border-t-0 first:pt-0`
+          ? `mt-4 border-t ${isDarkMode ? 'border-[#1F7A4A]/40' : 'border-sky-200/50'} pt-4 first:mt-0 first:border-t-0 first:pt-0`
           : ''
       }`}>
       {!isSameActor && (
@@ -63,7 +63,7 @@ function MessageBlock({ message, isSameActor, isDarkMode = false }: MessageBlock
           <div className={`whitespace-pre-wrap break-words text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
             {isProgress ? (
               <div className={`h-1 overflow-hidden rounded ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>
-                <div className="h-full animate-progress bg-blue-500" />
+                <div className="h-full animate-progress bg-[#2BE87D]" />
               </div>
             ) : (
               message.content
@@ -73,7 +73,7 @@ function MessageBlock({ message, isSameActor, isDarkMode = false }: MessageBlock
             <img
               src={message.image}
               alt="Page screenshot"
-              className={`mt-1 max-w-full rounded border ${isDarkMode ? 'border-slate-700' : 'border-gray-200'}`}
+              className={`mt-1 max-w-full rounded border ${isDarkMode ? 'border-[#1F7A4A]/40' : 'border-gray-200'}`}
             />
           )}
           {!isProgress && (

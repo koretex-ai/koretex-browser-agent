@@ -1,29 +1,18 @@
-import { useState, useEffect } from 'react';
 import '@src/Options.css';
 import { withErrorBoundary, withSuspense } from '@extension/shared';
 import { ModelSettings } from './components/ModelSettings';
 
 const Options = () => {
-  const [isDarkMode, setIsDarkMode] = useState(false);
-
-  // Check for dark mode preference
-  useEffect(() => {
-    const darkModeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    setIsDarkMode(darkModeMediaQuery.matches);
-
-    const handleChange = (e: MediaQueryListEvent) => {
-      setIsDarkMode(e.matches);
-    };
-
-    darkModeMediaQuery.addEventListener('change', handleChange);
-    return () => darkModeMediaQuery.removeEventListener('change', handleChange);
-  }, []);
+  // Always-dark theme keyed to the logo
+  const isDarkMode = true;
 
   return (
-    <div
-      className={`flex min-h-screen justify-center ${isDarkMode ? 'bg-slate-900' : "bg-[url('/bg.jpg')] bg-cover bg-center"} ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>
-      <main className={`m-8 w-full max-w-xl rounded-xl ${isDarkMode ? 'bg-slate-800/80' : 'bg-white/80'} p-8 backdrop-blur-sm`}>
-        <h1 className={`mb-6 text-xl font-bold ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>Settings</h1>
+    <div className="flex min-h-screen justify-center bg-[#0A150F] text-gray-200">
+      <main className="m-8 w-full max-w-xl rounded-xl border border-[#1F7A4A]/40 bg-[#0E1D14]/80 p-8 backdrop-blur-sm">
+        <h1 className="mb-6 flex items-center gap-3 text-xl font-bold text-gray-200">
+          <img src="/icon-128.png" alt="Local Browser Use" className="size-8 rounded" />
+          Settings
+        </h1>
         <ModelSettings isDarkMode={isDarkMode} />
       </main>
     </div>
