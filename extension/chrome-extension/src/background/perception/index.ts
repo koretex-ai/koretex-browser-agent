@@ -73,6 +73,15 @@ export async function captureScreenshot(
 
 // Capture the hybrid perception snapshot: DOM set-of-marks AND pixels together,
 // so every trajectory step carries the vision-superset training data.
+// The most recent snapshot — the state whose element indices the in-page
+// registry currently holds. Actions must log against THIS, never re-extract
+// (a second extraction rebuilds the registry and invalidates chosen indices).
+let lastSnapshot: PerceptionSnapshot | null = null;
+
+export function getLastSnapshot(): PerceptionSnapshot | null {
+  return lastSnapshot;
+}
+
 export async function capturePageState(tabId: number, showHighlights: boolean): Promise<PerceptionSnapshot> {
   const dom: ExtractedPageState = await runInPage(tabId, extractInteractiveElements, showHighlights);
   if (!dom) throw new Error('DOM extraction returned no result — is this a restricted page (chrome://, Web Store)?');
@@ -80,7 +89,7 @@ export async function capturePageState(tabId: number, showHighlights: boolean): 
   const screenshot = await captureScreenshot(tabId);
   logger.info('captured page state', dom.url, `${dom.elements.length} elements`);
 
-  return {
+  lastSnapshot = {
     url: dom.url,
     title: dom.title,
     scroll: dom.scroll,
@@ -88,6 +97,7 @@ export async function capturePageState(tabId: number, showHighlights: boolean): 
     screenshot: screenshot.dataUrl,
     capturedAt: Date.now(),
   };
+  return lastSnapshot;
 }
 
 export async function clearHighlights(tabId: number): Promise<void> {

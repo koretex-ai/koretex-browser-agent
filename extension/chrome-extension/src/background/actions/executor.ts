@@ -1,7 +1,7 @@
 import type { Action, PerceptionSnapshot } from '@extension/storage';
 import { trajectoryStore } from '@extension/storage';
 import { createLogger } from '../log';
-import { capturePageState, runInPage } from '../perception';
+import { getLastSnapshot, runInPage } from '../perception';
 import { clickElementByIndex, clickAtPoint, typeIntoElement, scrollPage } from '../perception/pageScript';
 
 const logger = createLogger('executor');
@@ -79,18 +79,24 @@ async function performAction(tabId: number, action: Action): Promise<ActionResul
 }
 
 /**
- * Execute a typed action against a tab. Captures the pre-action perception
- * snapshot (DOM + screenshot) and logs the step to the trajectory store —
- * the data flywheel records from the very first action.
+ * Execute a typed action against a tab and log the step to the trajectory
+ * store (the data flywheel records from the very first action).
+ *
+ * IMPORTANT: this never re-perceives. The pre-action snapshot is the one the
+ * decision was made against — the caller's capture, or the module-tracked
+ * last snapshot. Re-extracting here would rebuild the in-page element
+ * registry and invalidate the indices the planner just chose (SPA pages
+ * morph continuously, so the two extractions disagree).
  */
-export async function executeAction(tabId: number, sessionId: string, action: Action): Promise<ActionResult> {
+export async function executeAction(
+  tabId: number,
+  sessionId: string,
+  action: Action,
+  beforeSnapshot?: PerceptionSnapshot | null,
+): Promise<ActionResult> {
   let before: PerceptionSnapshot | null = null;
   if (action.type !== 'navigate' && action.type !== 'done') {
-    // navigate/done don't depend on page state; skip the capture cost
-    before = await capturePageState(tabId, false).catch(error => {
-      logger.warning('pre-action capture failed:', error);
-      return null;
-    });
+    before = beforeSnapshot !== undefined ? beforeSnapshot : getLastSnapshot();
   }
 
   let result: ActionResult;

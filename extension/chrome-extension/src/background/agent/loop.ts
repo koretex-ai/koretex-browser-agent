@@ -114,12 +114,12 @@ export async function runAgentTask(
         await clearHighlights(tabId).catch(() => {});
         try {
           const point = await groundTarget(tabId, decision.target, signal);
-          const result = await executeAction(tabId, taskId, {
-            type: 'click_at',
-            x: point.x,
-            y: point.y,
-            target: point.target,
-          });
+          const result = await executeAction(
+            tabId,
+            taskId,
+            { type: 'click_at', x: point.x, y: point.y, target: point.target },
+            state,
+          );
           history.push(`ground+click "${decision.target}" -> ${result.ok ? 'ok' : `FAILED: ${result.message}`}`);
           consecutiveFailures = result.ok ? 0 : consecutiveFailures + 1;
         } catch (error) {
@@ -149,7 +149,7 @@ export async function runAgentTask(
         `Step ${step}: ${summarizable(decision)} — ${decision.reasoning}`,
       );
 
-      const result = await executeAction(tabId, taskId, action);
+      const result = await executeAction(tabId, taskId, action, state);
       history.push(`${summarizable(decision)} -> ${result.ok ? 'ok' : `FAILED: ${result.message}`}`);
 
       consecutiveFailures = result.ok ? 0 : consecutiveFailures + 1;
