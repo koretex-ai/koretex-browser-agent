@@ -141,6 +141,18 @@ export async function runAgentTask(
         continue;
       }
 
+      // Reject hallucinated indices before executing: the planner must pick
+      // from the PAGE list it was shown
+      if ((action.type === 'click' || action.type === 'type') && state && action.index >= state.elements.length) {
+        history.push(
+          `${summarizable(decision)} -> REJECTED: index ${action.index} is not in the PAGE list ` +
+            `(it has ${state.elements.length} elements, [0]..[${state.elements.length - 1}])`,
+        );
+        consecutiveFailures++;
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) break;
+        continue;
+      }
+
       postExecutionEvent(
         port,
         Actors.SYSTEM,

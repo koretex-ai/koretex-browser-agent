@@ -96,8 +96,12 @@ export function extractInteractiveElements(showHighlights: boolean): ExtractedPa
   };
 
   const visible = candidates.filter(isVisible);
-  // Drop elements whose interactive ancestor is already included (e.g. span inside <a>)
-  const elements = visible.filter(el => !visible.some(other => other !== el && composedContains(other, el)));
+  // Keep the INNERMOST interactive elements: drop anything that contains
+  // another visible candidate. Sites put tabindex/roles on huge layout
+  // containers (GitHub's content div has tabindex="0") — preferring ancestors
+  // would swallow the whole page into one entry. Events bubble, so clicking
+  // the innermost target still triggers wrapper handlers.
+  const elements = visible.filter(el => !visible.some(other => other !== el && composedContains(el, other)));
 
   // Registry keeps rects too: SPA pages (GitHub etc.) re-render between
   // perceive and act, so stale refs fall back to a position-based click
