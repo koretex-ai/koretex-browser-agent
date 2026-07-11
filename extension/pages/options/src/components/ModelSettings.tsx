@@ -15,6 +15,10 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
   const [baseUrl, setBaseUrl] = useState(DEFAULT_CHAT_SETTINGS.baseUrl);
   const [model, setModel] = useState(DEFAULT_CHAT_SETTINGS.model);
   const [grounderModel, setGrounderModel] = useState(DEFAULT_CHAT_SETTINGS.grounderModel);
+  const [orchestratorEnabled, setOrchestratorEnabled] = useState(DEFAULT_CHAT_SETTINGS.orchestratorEnabled);
+  const [orchestratorBaseUrl, setOrchestratorBaseUrl] = useState(DEFAULT_CHAT_SETTINGS.orchestratorBaseUrl);
+  const [orchestratorApiKey, setOrchestratorApiKey] = useState(DEFAULT_CHAT_SETTINGS.orchestratorApiKey);
+  const [orchestratorModel, setOrchestratorModel] = useState(DEFAULT_CHAT_SETTINGS.orchestratorModel);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [connection, setConnection] = useState<ConnectionStatus>({ state: 'idle' });
   const [saved, setSaved] = useState(false);
@@ -24,6 +28,10 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
       setBaseUrl(settings.baseUrl);
       setModel(settings.model);
       setGrounderModel(settings.grounderModel);
+      setOrchestratorEnabled(settings.orchestratorEnabled);
+      setOrchestratorBaseUrl(settings.orchestratorBaseUrl);
+      setOrchestratorApiKey(settings.orchestratorApiKey);
+      setOrchestratorModel(settings.orchestratorModel);
     });
   }, []);
 
@@ -48,7 +56,15 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
   }, [testConnection]);
 
   const handleSave = async () => {
-    await chatSettingsStore.updateSettings({ baseUrl: baseUrl.replace(/\/$/, ''), model, grounderModel });
+    await chatSettingsStore.updateSettings({
+      baseUrl: baseUrl.replace(/\/$/, ''),
+      model,
+      grounderModel,
+      orchestratorEnabled,
+      orchestratorBaseUrl: orchestratorBaseUrl.replace(/\/$/, ''),
+      orchestratorApiKey: orchestratorApiKey.trim(),
+      orchestratorModel: orchestratorModel.trim(),
+    });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -155,6 +171,94 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
         <p className={`mt-1 text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
           Locates elements on screenshots when they are missing from the DOM (used as a fallback).
         </p>
+      </div>
+
+      <div className={`border-t pt-6 ${isDarkMode ? 'border-[#1F7A4A]/40' : 'border-gray-200'}`}>
+        <div className="mb-1 flex items-center justify-between">
+          <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+            Cloud orchestrator
+          </h2>
+          <label className="flex cursor-pointer items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={orchestratorEnabled}
+              onChange={e => setOrchestratorEnabled(e.target.checked)}
+              className="size-4 accent-[#2BE87D]"
+            />
+            <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>Enabled</span>
+          </label>
+        </div>
+        <p className={`mb-4 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+          A strong cloud model plans, decomposes and validates tasks; the local models still do all the browsing.
+          Screenshots and page content never leave your machine — only the task and step summaries are sent. Without
+          an API key the agent runs fully local.
+        </p>
+
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="orch-url" className={labelClass}>
+              OpenAI-compatible endpoint
+            </label>
+            <input
+              id="orch-url"
+              type="text"
+              value={orchestratorBaseUrl}
+              onChange={e => setOrchestratorBaseUrl(e.target.value)}
+              placeholder={DEFAULT_CHAT_SETTINGS.orchestratorBaseUrl}
+              className={inputClass}
+            />
+          </div>
+
+          <div>
+            <label htmlFor="orch-key" className={labelClass}>
+              API key
+            </label>
+            <input
+              id="orch-key"
+              type="password"
+              value={orchestratorApiKey}
+              onChange={e => setOrchestratorApiKey(e.target.value)}
+              placeholder="sk-or-…"
+              autoComplete="off"
+              className={inputClass}
+            />
+          </div>
+
+          <div>
+            <label htmlFor="orch-model" className={labelClass}>
+              Orchestrator model
+            </label>
+            <input
+              id="orch-model"
+              type="text"
+              value={orchestratorModel}
+              onChange={e => setOrchestratorModel(e.target.value)}
+              placeholder={DEFAULT_CHAT_SETTINGS.orchestratorModel}
+              className={inputClass}
+            />
+            <div className="mt-2 flex flex-wrap gap-2">
+              {[
+                { label: 'GLM-5.2 (recommended)', value: 'z-ai/glm-5.2' },
+                { label: 'DeepSeek V4 Flash (budget)', value: 'deepseek/deepseek-v4-flash' },
+                { label: 'Kimi K2.6', value: 'moonshotai/kimi-k2.6' },
+              ].map(preset => (
+                <button
+                  key={preset.value}
+                  type="button"
+                  onClick={() => setOrchestratorModel(preset.value)}
+                  className={`rounded-md border px-2 py-1 text-xs transition-colors ${
+                    orchestratorModel === preset.value
+                      ? 'border-[#2BE87D] text-[#2BE87D]'
+                      : isDarkMode
+                        ? 'border-[#1F7A4A]/50 text-gray-400 hover:text-gray-200'
+                        : 'border-gray-300 text-gray-500 hover:text-gray-700'
+                  }`}>
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="flex items-center gap-3">
