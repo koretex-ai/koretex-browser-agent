@@ -55,18 +55,35 @@ function normalizeLabel(text: string): string {
     .trim();
 }
 
+export interface TargetMatch {
+  /** Best-matching element index, or null when nothing clears the threshold */
+  index: number | null;
+  /**
+   * Two different elements matched almost equally well — the DOM label cannot
+   * tell them apart (e.g. a nav "Post" and a composer's submit "Post"). The
+   * caller should defer to vision rather than silently pick one.
+   */
+  ambiguous: boolean;
+}
+
 /**
  * Resolve a target description ("the 'Start a post' button") to an element
- * index by label matching. Deterministic, no model call. Returns null when
- * no confident match exists (caller falls back to vision grounding).
+ * index by label matching, and report whether the match was AMBIGUOUS.
+ * Deterministic, no model call.
+ *
+ * Escalate-on-uncertainty: a confident single match is used directly; no
+ * match returns null (caller uses vision); a near-tie between distinct
+ * elements returns ambiguous=true so the caller ALSO uses vision — a
+ * deterministic sense must not guess when it cannot distinguish candidates.
  */
-export function resolveTarget(state: PerceptionSnapshot, target: string): number | null {
+export function resolveTargetDetail(state: PerceptionSnapshot, target: string): TargetMatch {
   const wanted = normalizeLabel(target);
-  if (!wanted) return null;
+  if (!wanted) return { index: null, ambiguous: false };
   const wantedTokens = new Set(wanted.split(' '));
 
   let bestIndex: number | null = null;
   let bestScore = 0;
+  let secondScore = 0;
   for (const el of state.elements) {
     const label = normalizeLabel(el.text || el.placeholder || el.value || '');
     if (!label) continue;
@@ -82,11 +99,22 @@ export function resolveTarget(state: PerceptionSnapshot, target: string): number
       score = (0.8 * common) / Math.max(wantedTokens.size, labelTokens.size);
     }
     if (score > bestScore) {
+      secondScore = bestScore;
       bestScore = score;
       bestIndex = el.index;
+    } else if (score > secondScore) {
+      secondScore = score;
     }
   }
-  return bestScore >= 0.45 ? bestIndex : null;
+  if (bestScore < 0.45) return { index: null, ambiguous: false };
+  // A strong second match within a hair of the best = indistinguishable by label
+  const ambiguous = bestScore >= 0.85 && secondScore >= bestScore - 0.08;
+  return { index: bestIndex, ambiguous };
+}
+
+/** Index-only convenience (existence checks); ignores ambiguity. */
+export function resolveTarget(state: PerceptionSnapshot, target: string): number | null {
+  return resolveTargetDetail(state, target).index;
 }
 
 export function describeStep(step: ProgramStep): string {
@@ -314,11 +342,13 @@ export function createStepRunner(
         if (!step.target) return { ok: false, message: 'click step has no target' };
         const state = await perceive();
         if (!state) return { ok: false, message: 'could not read the page to locate the target' };
-        const index = resolveTarget(state, step.target);
-        if (index !== null) {
-          return executeAction(tabId, taskId, { type: 'click', index }, state, logContextFor(step));
+        const match = resolveTargetDetail(state, step.target);
+        // Use the DOM match only when it is confident AND unambiguous. A near-
+        // tie between distinct elements (two "Post" buttons) goes to vision,
+        // which sees the screenshot and can pick the right one.
+        if (match.index !== null && !match.ambiguous) {
+          return executeAction(tabId, taskId, { type: 'click', index: match.index }, state, logContextFor(step));
         }
-        // Vision fallback: Holo locates the target on the screenshot
         try {
           const point = await groundTarget(tabId, step.target, signal);
           return executeAction(
@@ -331,7 +361,10 @@ export function createStepRunner(
         } catch (error) {
           if (signal.aborted) throw error;
           const message = error instanceof Error ? error.message : String(error);
-          return { ok: false, message: `no element matching "${step.target}" (vision fallback: ${message})` };
+          const why = match.ambiguous
+            ? `"${step.target}" matched several elements`
+            : `no element matching "${step.target}"`;
+          return { ok: false, message: `${why} (vision fallback: ${message})` };
         }
       }
       case 'type': {
@@ -339,9 +372,9 @@ export function createStepRunner(
         if (!step.target || !text) return { ok: false, message: 'type step needs target and text' };
         const state = await perceive();
         if (!state) return { ok: false, message: 'could not read the page to locate the input' };
-        const index = resolveTarget(state, step.target);
-        if (index !== null) {
-          return executeAction(tabId, taskId, { type: 'type', index, text }, state, logContextFor(step));
+        const match = resolveTargetDetail(state, step.target);
+        if (match.index !== null && !match.ambiguous) {
+          return executeAction(tabId, taskId, { type: 'type', index: match.index, text }, state, logContextFor(step));
         }
         // Vision fallback — the same ladder click has. Rich/contenteditable
         // composers often expose no matchable label: ground the field on the

@@ -367,8 +367,14 @@ export async function runPavTask(
       }
       const invalid = steps.length === 0 ? 'the plan has no steps' : expectFaults.join('; ');
       if (invalid) {
+        // A plan rejected at validation still counts toward the repeat guard:
+        // re-proposing the SAME rejected plan means the planner is not learning
+        // from the reason, so stop honestly instead of burning the whole budget
+        const rejectedFp = planFingerprint(steps);
+        const repeated = priorFingerprints.includes(rejectedFp);
+        priorFingerprints.push(rejectedFp);
         note(
-          `plan ${plansUsed} rejected by the runtime: ${invalid}. Every state-changing step needs a REAL, specific expect — a "see" question must ask something concrete about the page, never "yes".`,
+          `plan ${plansUsed} rejected by the runtime: ${invalid}. Emit a DIFFERENT plan that fixes this — do not repeat the rejected step or objective. Every state-changing step needs a REAL, specific expect, and side-effect/objective expects must verify the transition only success produces, not content already on the page.`,
         );
         postExecutionEvent(
           port,
@@ -378,6 +384,13 @@ export async function runPavTask(
           `Plan rejected (${invalid}) — replanning.`,
           planMeta,
         );
+        if (repeated) {
+          await report(
+            'partial',
+            `The planner kept proposing a plan the runtime rejects and could not produce a valid one: ${invalid}`,
+          );
+          return;
+        }
         continue;
       }
 
