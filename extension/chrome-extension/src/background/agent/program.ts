@@ -144,6 +144,13 @@ export function itemKey(line: string): string {
     .slice(0, 120);
 }
 
+// The local reader emits the literal token "<TAB>" (or an escaped "\t") when
+// told to tab-separate — convert those to a real tab character so spreadsheet
+// pastes land in columns instead of showing the placeholder text verbatim
+export function normalizeTabs(text: string): string {
+  return text.replace(/<TAB>/gi, '\t').replace(/\\t/g, '\t');
+}
+
 function pageSignature(state: PerceptionSnapshot | null): string {
   if (!state) return 'no-state';
   return `${state.url}|${state.scroll.y}|${(state.pageText ?? '').slice(0, 300)}`;
@@ -233,9 +240,9 @@ export function createStepRunner(
     if (step.textFrom === 'collected') {
       const items = ctx.collectedItems?.() ?? [];
       if (items.length === 0) return undefined;
-      return [step.text, ...items].filter(Boolean).join('\n');
+      return normalizeTabs([step.text, ...items].filter(Boolean).join('\n'));
     }
-    return step.text;
+    return step.text === undefined ? undefined : normalizeTabs(step.text);
   };
 
   const execStep = async (step: ProgramStep): Promise<{ ok: boolean; message: string }> => {

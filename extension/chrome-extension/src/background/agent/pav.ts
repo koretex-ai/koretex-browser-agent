@@ -4,10 +4,10 @@ import { createLogger } from '../log';
 import { postExecutionEvent } from '../events';
 import { capturePageState } from '../perception';
 import { streamCloudChatReply } from './chat';
-import { planTask, reflectOnFailure, reportOutcome } from './orchestrator';
+import { planTask, reflectOnFailure, reportOutcome, curateCollection } from './orchestrator';
 import type { ProgramStep, CallUsage } from './orchestrator';
 import { createStepRunner, describeStep, listLines, itemKey } from './program';
-import { verifyExpect, describeExpect, hasExpectation } from './verifier';
+import { verifyExpect, describeExpect, hasExpectation, degenerateExpectReason } from './verifier';
 
 const logger = createLogger('pav');
 
@@ -148,6 +148,33 @@ export async function runPavTask(
   const deadline = startedAt + MAX_TASK_MS;
   const outOfTime = () => Date.now() >= deadline;
 
+  // Curate the collection ONCE, lazily, right before it is first written —
+  // by then all harvesting is done. The local reader transcribes without
+  // judging relevance, so a broad search leaks non-matching rows; this prunes
+  // them against the objective. Mutates `collection` in place so the live
+  // textFrom:"collected" view sees the curated set.
+  let curated = false;
+  const curateBeforeWrite = async (meta: string): Promise<string> => {
+    if (curated || collection.length === 0) return meta;
+    curated = true;
+    const result = await curateCollection(task, collection.slice(), signal);
+    const usedMeta = result.usage ? track(result.usage) : meta;
+    if (result.items.length && result.items.length !== collection.length) {
+      collection.length = 0;
+      collection.push(...result.items);
+      note(`curated the collection: kept ${result.items.length}, dropped ${result.dropped} non-matching item(s)`);
+      postExecutionEvent(
+        port,
+        Actors.SYSTEM,
+        'step.ok',
+        taskId,
+        `Curated collected data — kept ${result.items.length}, dropped ${result.dropped} off-target item(s).`,
+        usedMeta,
+      );
+    }
+    return usedMeta;
+  };
+
   const priorFingerprints: string[] = [];
   let plansUsed = 0;
 
@@ -194,18 +221,27 @@ export async function runPavTask(
     const steps = (plan.steps ?? []).slice(0, MAX_STEPS_PER_PLAN);
     const objective = (plan.objective ?? []).filter(hasExpectation).slice(0, 4);
 
-    // Conductor-enforced plan validity: no steps, or state-changing steps
-    // without expects, is not a runnable plan
-    const invalid =
-      steps.length === 0
-        ? 'the plan has no steps'
-        : steps
-            .map((step, i) => ({ step, i }))
-            .filter(({ step }) => STATE_CHANGING.has(step.do) && !hasExpectation(step.expect))
-            .map(({ step, i }) => `step ${i + 1} (${describeStep(step)}) has no expect`)
-            .join('; ');
+    // Conductor-enforced plan validity: no steps; a state-changing step with
+    // no expect; or a DEGENERATE expect (e.g. {"see":"yes"}) that would pass
+    // vacuously. Verification only means something if the expects are real.
+    const expectFaults: string[] = [];
+    for (const [i, step] of steps.entries()) {
+      if (STATE_CHANGING.has(step.do) && !hasExpectation(step.expect)) {
+        expectFaults.push(`step ${i + 1} (${describeStep(step)}) has no expect`);
+      } else if (step.expect) {
+        const degenerate = degenerateExpectReason(step.expect);
+        if (degenerate) expectFaults.push(`step ${i + 1}: ${degenerate}`);
+      }
+    }
+    for (const [i, expect] of objective.entries()) {
+      const degenerate = degenerateExpectReason(expect);
+      if (degenerate) expectFaults.push(`objective check ${i + 1}: ${degenerate}`);
+    }
+    const invalid = steps.length === 0 ? 'the plan has no steps' : expectFaults.join('; ');
     if (invalid) {
-      note(`plan ${plansUsed} rejected by the runtime: ${invalid}. Every state-changing step needs an expect.`);
+      note(
+        `plan ${plansUsed} rejected by the runtime: ${invalid}. Every state-changing step needs a REAL, specific expect — a "see" question must ask something concrete about the page, never "yes".`,
+      );
       postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `Plan rejected (${invalid}) — replanning.`, planMeta);
       continue;
     }
@@ -258,6 +294,9 @@ export async function runPavTask(
       const step = steps[i];
       const stepLabel = `Step ${i + 1}/${steps.length}: ${describeStep(step)}`;
       const wasFixed = Boolean((step as { _fixed?: boolean })._fixed);
+
+      // Quality-gate the data the moment before it is written to the document
+      if (step.textFrom === 'collected') await curateBeforeWrite('');
 
       // Execute + verify, with one silent retry for flakes. Side-effect steps
       // get exactly ONE attempt — retrying a possibly-landed post/send is the

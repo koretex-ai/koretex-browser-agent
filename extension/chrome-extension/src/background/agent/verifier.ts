@@ -50,6 +50,27 @@ export function hasExpectation(expect?: StepExpect): boolean {
   return Boolean(expect && (expect.url || expect.text || expect.element || expect.see));
 }
 
+// Degenerate expects are the loophole a lazy planner finds: {"see":"yes"} asks
+// the VLM the question "yes", gets "YES", and passes vacuously — verification
+// theater. A real check has substance. Returns a reason string, or null when
+// the expect is legitimate. Trivial deterministic fields (url/text/element)
+// are permitted even if short — a 3-char URL fragment is still a real check;
+// only the free-form `see` question can be meaningfully empty.
+const DEGENERATE_SEE = new Set(['yes', 'no', 'ok', 'true', 'false', 'done', 'success', 'yes/no', 'visible']);
+export function degenerateExpectReason(expect: StepExpect): string | null {
+  if (expect.see !== undefined) {
+    const q = expect.see
+      .trim()
+      .toLowerCase()
+      .replace(/[?.!]+$/, '');
+    if (q.length < 12 || DEGENERATE_SEE.has(q) || !/\s/.test(q)) {
+      return `the "see" question "${expect.see}" is not a real yes/no question about the page`;
+    }
+  }
+  if (!hasExpectation(expect)) return 'the expect is empty';
+  return null;
+}
+
 // Check the deterministic fields against one snapshot; null = all hold
 function deterministicFailure(state: PerceptionSnapshot, expect: StepExpect): string | null {
   if (expect.url && !state.url.toLowerCase().includes(expect.url.toLowerCase())) {

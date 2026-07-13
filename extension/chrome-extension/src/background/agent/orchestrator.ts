@@ -122,7 +122,9 @@ Fields combine (all must hold). Prefer url/text/element — they are checked ins
 
 SIDE EFFECTS — steps that post, send, submit a form, purchase, or delete MUST carry "sideEffect": true. The runtime never auto-retries them.
 
-WRITING COLLECTED DATA: a type/type_focused step may use "textFrom":"collected" — the runtime inserts EVERY item collected so far, complete and verbatim, below the optional "text" (which becomes a header line, e.g. column headers). This is the ONLY reliable way to write a collected dataset — journal digests are truncated, so never paste them into "text" yourself. Harvest queries for data that will be written must ask for each item ALREADY FORMATTED for the destination (e.g. "format each record as: Name<TAB>Title<TAB>Company").
+WRITING COLLECTED DATA: a type/type_focused step may use "textFrom":"collected" — the runtime inserts EVERY item collected so far, complete and verbatim, below the optional "text" (which becomes a header line). This is the ONLY reliable way to write a collected dataset — journal digests are truncated, so never paste them into "text" yourself. Harvest queries for data that will be written must ask for each item ALREADY FORMATTED for its destination, and the FORMAT DEPENDS ON THE DESTINATION:
+- Google SHEETS (a grid): tab-separated, e.g. "format each record as: Name<TAB>Title<TAB>Company" — tabs move between cells.
+- Google DOCS or any prose document: readable separators, NEVER tabs, e.g. "format each record on one line as: Name — Title — Company". Tabs in a doc render as literal gaps or the wrong layout.
 
 Canvas editors (Google Docs/Sheets): the editor is ALREADY FOCUSED when the document opens — go straight to type_focused. Never click menus or toolbars first (clicking steals focus); if UI state is uncertain, use {"do":"key","combo":"Escape"} before typing. Type PLAIN TEXT — no markdown syntax. Verify canvas writes with a "see" expect (text extraction cannot see inside the canvas).`;
 
@@ -138,7 +140,9 @@ ${STEP_FORMS}
 
 OBJECTIVE EXPECTS: "objective" is 1-4 expects that define success of the WHOLE task, verified on the live page after the last step. Make them the user's actual deliverable ("text": the sheet shows the header row; "url": the doc URL), not intermediate progress.
 
-Rules: prefer navigating directly to known URLs (including search-results URLs with the query embedded) over typing into search boxes; when you do type into a search box, the next step must be {"do":"key","combo":"Enter"}. Steps that submit content come AFTER the steps that enter it. Never plan logging in or handling credentials — if the task requires being signed in, assume the user is; if a login wall appears, the run will stop and tell them. You are told PLANS USED n/N: when on the LAST plan, deliver the objective with the data already collected (a delivered partial beats an undelivered perfect).`;
+SEARCH THOUGHTFULLY — a vague query returns vague people. Translate a ROLE-CLASS request ("decision makers in AI") into CONCRETE job-title queries the site actually indexes ("Head of AI", "VP Artificial Intelligence", "Chief AI Officer", "Director of Machine Learning"), not the literal phrase "AI decision maker" (which only matches people who typed that buzzword into their own headline). Combine the qualifiers the user gave — role AND location AND seniority — into the query or the search URL's filters. If the user names a count and one query is unlikely to yield enough QUALIFYING people, run 2-3 targeted searches (harvest from each) rather than one broad harvest. The harvested items are quality-filtered before writing, so it is fine to over-collect; it is NOT fine to search for the wrong thing.
+
+Rules: prefer navigating directly to known URLs (including search-results URLs with the query embedded) over typing into search boxes; when you do type into a search box, the next step must be {"do":"key","combo":"Enter"}. Steps that submit content come AFTER the steps that enter it. When writing into a document that may ALREADY hold content from a previous attempt (a replan after a failed write), select-all and clear first: {"do":"key","combo":"cmd+a"} then {"do":"key","combo":"Backspace"} before the type step — this prevents duplicated content. Never plan logging in or handling credentials — if the task requires being signed in, assume the user is; if a login wall appears, the run will stop and tell them. You are told PLANS USED n/N: when on the LAST plan, deliver the objective with the data already collected (a delivered partial beats an undelivered perfect).`;
 
 const REFLECT_SYSTEM_PROMPT = `You are the reflector for a browser agent. One step of the current plan failed verification (or failed to execute). You get the OBJECTIVE, the JOURNAL, the PLAN, the FAILED STEP with its expect, and the OBSERVATION — what the page or verifier actually shows. Decide whether the STEP was wrong or the PLAN is wrong.
 
@@ -151,7 +155,7 @@ Reply ONLY with a JSON object:
 
 ${STEP_FORMS}
 
-Diagnose from the OBSERVATION, not guesses: "no element matching X" with a list of visible labels usually means a wrong label (fix_step with the right one); a wrong URL or an unexpected page means the plan drifted (replan). SIDE-EFFECT RULE: if the failed step has sideEffect true, it may have taken effect even though verification failed — NEVER fix_step a repeat of that action; verdict must be replan with a verification-first approach, or stop.`;
+Diagnose from the OBSERVATION, not guesses: "no element matching X" with a list of visible labels usually means a wrong label (fix_step with the right one); a wrong URL or an unexpected page means the plan drifted (replan). A canvas WRITE that failed its "see" check may have PARTIALLY landed — do not fix_step a blind re-type onto existing content (it duplicates); replan with a clear-first sequence (cmd+a, Backspace, then re-type). SIDE-EFFECT RULE: if the failed step has sideEffect true, it may have taken effect even though verification failed — NEVER fix_step a repeat of that action; verdict must be replan with a verification-first approach, or stop.`;
 
 const REPORT_SYSTEM_PROMPT = `You are writing the final user-facing answer for a browser agent run. You get the OBJECTIVE, the STATUS (achieved or partial), the JOURNAL of what happened, and the COLLECTED ITEMS (complete, deduplicated data gathered during the run).
 
@@ -304,6 +308,40 @@ export async function reflectOnFailure(
     throw new Error(`Reflector returned invalid verdict: ${String(result.verdict)}`);
   }
   return { result, usage };
+}
+
+const CURATE_SYSTEM_PROMPT = `You are curating a dataset a browser agent collected, just before it is written to the user's document. The local page-reader transcribes verbatim — it does NOT judge relevance — so the raw items may include people/rows that do not actually fit the user's request. Your job is to KEEP only the items that genuinely match, in the user's intended order.
+
+Reply ONLY with a JSON object: {"items": ["<kept item verbatim>", ...], "dropped": <count>}
+
+Rules: return kept items EXACTLY as given (same text, same field separators — do not reformat, do not add or invent fields). Drop items that clearly do not match the objective (wrong role, wrong location, off-topic, obvious duplicates, junk). If the objective asks for N items and more than N genuinely qualify, keep the N best. If you cannot tell whether an item qualifies, KEEP it (better a borderline include than dropping real data). Never fabricate items.`;
+
+/**
+ * Quality pass over the collection before it is written: the local reader
+ * cannot judge relevance, so a broad search leaks non-matching rows. One cheap
+ * GLM call prunes them against the objective. Returns the kept items (verbatim)
+ * or the originals unchanged on any failure — curation must never lose data.
+ */
+export async function curateCollection(
+  objective: string,
+  items: string[],
+  signal: AbortSignal,
+): Promise<{ items: string[]; dropped: number; usage: CallUsage | null }> {
+  if (items.length === 0) return { items, dropped: 0, usage: null };
+  try {
+    const userContent = `OBJECTIVE: ${objective}\n\nCOLLECTED ITEMS (one per line):\n${items.join('\n')}`;
+    const { value, usage } = await callOrchestrator<{ items: string[]; dropped?: number }>(
+      CURATE_SYSTEM_PROMPT,
+      userContent,
+      signal,
+    );
+    if (!Array.isArray(value.items) || value.items.length === 0) return { items, dropped: 0, usage };
+    return { items: value.items, dropped: Math.max(0, items.length - value.items.length), usage };
+  } catch (error) {
+    if (signal.aborted) throw error;
+    logger.warning('curate failed, keeping all items:', error);
+    return { items, dropped: 0, usage: null };
+  }
 }
 
 export async function reportOutcome(
