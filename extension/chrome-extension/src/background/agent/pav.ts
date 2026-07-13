@@ -37,6 +37,9 @@ const MAX_STEPS_PER_PLAN = 25;
 const MAX_FIXES_PER_PLAN = 4;
 const MAX_TASK_MS = 15 * 60_000;
 const JOURNAL_MAX_LINES = 80;
+// A stalled run is only resumable this long — after that it is stale context
+// that must not leak into a later task on the same session
+const RESUME_WINDOW_MS = 30 * 60_000;
 // Steps that change page/app state need a verifiable postcondition; read-only
 // steps may omit one
 const STATE_CHANGING = new Set(['navigate', 'click', 'type', 'type_focused', 'key']);
@@ -226,7 +229,12 @@ export async function runPavTask(
   // we re-plan against the live page WITH that context — knowledge-replay, not
   // step-replay (the page it left is stale).
   const prior = await runStateStore.getRun(taskId).catch(() => null);
-  if (prior) {
+  // Only a RECENT prior run may be resumed/answered — an old one lingering on
+  // the session (the user moved on long ago) must never bleed into new work
+  const priorFresh = prior ? Date.now() - prior.updatedAt < RESUME_WINDOW_MS : false;
+  if (prior && !priorFresh) {
+    await runStateStore.clearRun(taskId).catch(() => {});
+  } else if (prior) {
     const seedFromPrior = () => {
       journal.push(...prior.journal.slice(-JOURNAL_MAX_LINES));
       for (const item of prior.collection) {
@@ -638,9 +646,15 @@ export async function runPavTask(
 
     await report('partial', `Plan budget (${MAX_PLANS}) exhausted without meeting the objective.`);
   } catch (error) {
-    // Cancel, timeout, or an unexpected throw — leave the run RESUMABLE so the
-    // user can pick up where it stalled instead of starting over
-    await persist('stalled').catch(() => {});
+    if (signal.aborted) {
+      // The user explicitly STOPPED this task — stop means stop. Clear the
+      // state so it can never bleed into the next task on this session.
+      await runStateStore.clearRun(taskId).catch(() => {});
+    } else {
+      // A timeout / network / unexpected error — leave the run RESUMABLE so
+      // the user can pick up where it stalled instead of starting over
+      await persist('stalled').catch(() => {});
+    }
     throw error;
   }
 }
