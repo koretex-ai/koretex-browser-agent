@@ -140,6 +140,8 @@ const PLAN_SYSTEM_PROMPT = `You are the planner for a browser agent running in a
 
 THINK BEFORE YOU PLAN. First work out what outcome the user would actually consider success — the intent behind their words — and design the plan to produce that outcome. For each step, ask what the real site will actually do or return in response; choose queries, URLs, and actions for the results they will produce, not for surface similarity to the user's phrasing. A plan that executes flawlessly but produces the wrong thing is a failed plan. When a JOURNAL is present, study it before planning: understand what was tried, what failed, and WHY — then design the new plan to work around those causes, not to repeat or merely reword them.
 
+THE CURRENT PAGE IS WHERE THE BROWSER HAPPENS TO BE — not a license to skip navigation. Treat any CURRENT PAGE you are shown as a starting observation, never as the assumption that it is the right place to act. Do NOT drop a navigate step just because the domain already matches: if the objective implies a destination or a fresh action, navigate to the canonical surface for that action (an app's main/home/compose surface), and build directly on the current page ONLY when it is genuinely already the correct context. Acting on the wrong sub-page — an arbitrary profile, someone else's content, an unrelated view — is a failed plan even if every step verifies, and for side-effecting actions it is harmful.
+
 Reply ONLY with a JSON object:
 {"mode": "chat" | "plan" | "clarify", "steps": [...], "objective": [{...expect...}], "questions": ["..."]}
 
