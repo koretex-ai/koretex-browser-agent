@@ -1,9 +1,14 @@
 import type { Action } from '@extension/storage';
 import { chatSettingsStore } from '@extension/storage';
 import { createLogger } from '../log';
+import { fetchWithTimeout } from '../net';
 import type { CallUsage } from './orchestrator';
 
 const logger = createLogger('planner');
+
+// Local text generation (extract reader on ~16k-char prefill) is slow but
+// bounded; past this the model server is wedged
+const LOCAL_TEXT_TIMEOUT_MS = 90_000;
 
 export interface PlannerDecision {
   reasoning: string;
@@ -60,22 +65,26 @@ async function callLocal(
   json: boolean,
 ): Promise<string> {
   const { baseUrl, model } = await chatSettingsStore.getSettings();
-  const response = await fetch(`${baseUrl}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userContent },
-      ],
-      stream: false,
-      think: false,
-      ...(json ? { format: 'json' } : {}),
-      options: { temperature: 0.1 },
-    }),
+  const response = await fetchWithTimeout(
+    `${baseUrl}/api/chat`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent },
+        ],
+        stream: false,
+        think: false,
+        ...(json ? { format: 'json' } : {}),
+        options: { temperature: 0.1 },
+      }),
+    },
     signal,
-  });
+    LOCAL_TEXT_TIMEOUT_MS,
+  );
   if (!response.ok) {
     throw new Error(`Ollama request failed (HTTP ${response.status}). Is Ollama running at ${baseUrl}?`);
   }

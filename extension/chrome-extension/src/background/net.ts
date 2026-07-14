@@ -9,6 +9,26 @@
  * distinguishable from a timeout: on cancel the error propagates as an
  * AbortError; on timeout it is a plain Error with a clear message.
  */
+/**
+ * Race any promise against a timeout. For awaited operations that are NOT
+ * fetch — chrome.scripting.executeScript, captureVisibleTab — which can hang
+ * forever if the target tab's content process is unresponsive. Nothing the
+ * conductor awaits may block indefinitely; a hang becomes a labeled error.
+ * (The underlying operation is not cancelled, only stopped-waiting-on — that
+ * is harmless for idempotent reads.)
+ */
+export async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function fetchWithTimeout(
   url: string,
   init: RequestInit,

@@ -1,9 +1,15 @@
 import type { PerceptionSnapshot } from '@extension/storage';
 import { createLogger } from '../log';
+import { withTimeout } from '../net';
 import { extractInteractiveElements, extractPageText, removeHighlights } from './pageScript';
 import type { ExtractedPageState } from './pageScript';
 
 const logger = createLogger('perception');
+
+// A page read (script injection / screenshot) that has not returned in this
+// long means the tab's content process is unresponsive — fail loudly instead
+// of hanging the whole task with no plan event
+const PERCEPTION_OP_TIMEOUT_MS = 12_000;
 
 // Latency is image-prefill bound (~5s/call at full res on the M3 Pro), so
 // downscaling is a first-class lever: cap width and recompress aggressively.
@@ -25,11 +31,15 @@ async function runInPage<Args extends unknown[], Result>(
   func: (...args: Args) => Result,
   ...args: Args
 ): Promise<Result> {
-  const [injection] = await chrome.scripting.executeScript({
-    target: { tabId },
-    func,
-    args: args as never,
-  });
+  const [injection] = await withTimeout(
+    chrome.scripting.executeScript({
+      target: { tabId },
+      func,
+      args: args as never,
+    }),
+    PERCEPTION_OP_TIMEOUT_MS,
+    'reading the page',
+  );
   return injection?.result as Result;
 }
 
@@ -72,7 +82,11 @@ export async function captureScreenshot(
   opts: { maxWidth?: number; quality?: number } = {},
 ): Promise<Screenshot> {
   const tab = await chrome.tabs.get(tabId);
-  const raw = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 85 });
+  const raw = await withTimeout(
+    chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 85 }),
+    PERCEPTION_OP_TIMEOUT_MS,
+    'capturing a screenshot',
+  );
   return downscaleDataUrl(raw, opts.maxWidth ?? MAX_SCREENSHOT_WIDTH, opts.quality ?? SCREENSHOT_JPEG_QUALITY);
 }
 

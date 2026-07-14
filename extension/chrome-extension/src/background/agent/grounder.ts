@@ -1,9 +1,14 @@
 import { chatSettingsStore } from '@extension/storage';
 import { createLogger } from '../log';
+import { fetchWithTimeout } from '../net';
 import { captureScreenshot, runInPage, GROUNDER_SCREENSHOT_OPTS } from '../perception';
 import { getViewportSize } from '../perception/pageScript';
 
 const logger = createLogger('grounder');
+
+// A local vision call (image prefill on a 3B model) is slow but bounded — past
+// this the model server is wedged, so fail rather than hang the task
+const LOCAL_VISION_TIMEOUT_MS = 60_000;
 
 // Prompt validated in the Phase-0 spike (phase0/run.py): Holo1.5-3B answers
 // a plain JSON coordinate request reliably.
@@ -45,23 +50,27 @@ export async function groundTarget(tabId: number, instruction: string, signal: A
   const shot = await captureScreenshot(tabId, GROUNDER_SCREENSHOT_OPTS);
   const base64 = shot.dataUrl.replace(/^data:[^,]+,/, '');
 
-  const response = await fetch(`${baseUrl}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: grounderModel,
-      messages: [
-        {
-          role: 'user',
-          content: groundingPrompt(shot.width, shot.height, instruction),
-          images: [base64],
-        },
-      ],
-      stream: false,
-      options: { temperature: 0 },
-    }),
+  const response = await fetchWithTimeout(
+    `${baseUrl}/api/chat`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: grounderModel,
+        messages: [
+          {
+            role: 'user',
+            content: groundingPrompt(shot.width, shot.height, instruction),
+            images: [base64],
+          },
+        ],
+        stream: false,
+        options: { temperature: 0 },
+      }),
+    },
     signal,
-  });
+    LOCAL_VISION_TIMEOUT_MS,
+  );
   if (!response.ok) {
     throw new Error(`Grounder request failed (HTTP ${response.status}). Is ${grounderModel} pulled?`);
   }
@@ -102,27 +111,31 @@ export async function verifyVisual(tabId: number, question: string, signal: Abor
   const shot = await captureScreenshot(tabId, GROUNDER_SCREENSHOT_OPTS);
   const base64 = shot.dataUrl.replace(/^data:[^,]+,/, '');
 
-  const response = await fetch(`${baseUrl}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: 'user',
-          content:
-            `Look at this ${shot.width}x${shot.height} screenshot of a web page and answer the question.\n` +
-            `QUESTION: ${question}\n` +
-            'If the question asks whether something is visible/present, start your answer with YES or NO, ' +
-            'then quote the relevant text you can actually see. Be concise and only describe what is in the image.',
-          images: [base64],
-        },
-      ],
-      stream: false,
-      options: { temperature: 0 },
-    }),
+  const response = await fetchWithTimeout(
+    `${baseUrl}/api/chat`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'user',
+            content:
+              `Look at this ${shot.width}x${shot.height} screenshot of a web page and answer the question.\n` +
+              `QUESTION: ${question}\n` +
+              'If the question asks whether something is visible/present, start your answer with YES or NO, ' +
+              'then quote the relevant text you can actually see. Be concise and only describe what is in the image.',
+            images: [base64],
+          },
+        ],
+        stream: false,
+        options: { temperature: 0 },
+      }),
+    },
     signal,
-  });
+    LOCAL_VISION_TIMEOUT_MS,
+  );
   if (!response.ok) {
     throw new Error(`Visual verify request failed (HTTP ${response.status}). Is ${model} pulled?`);
   }
