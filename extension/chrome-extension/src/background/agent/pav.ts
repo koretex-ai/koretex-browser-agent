@@ -5,7 +5,7 @@ import { postExecutionEvent } from '../events';
 import { capturePageState } from '../perception';
 import { streamCloudChatReply } from './chat';
 import { planTask, reflectOnFailure, reportOutcome, curateCollection } from './orchestrator';
-import type { ProgramStep, CallUsage } from './orchestrator';
+import type { ProgramStep, CallUsage, StepExpect } from './orchestrator';
 import { createStepRunner, describeStep, listLines, itemKey } from './program';
 import {
   verifyExpect,
@@ -67,6 +67,49 @@ function elementsDigestOf(state: PerceptionSnapshot | null): string[] {
 // free text (a plan that only rewords its typing is still the same plan)
 function planFingerprint(steps: ProgramStep[]): string {
   return JSON.stringify(steps.map(step => [step.do, step.url ?? '', step.target ?? '', step.query ?? '']));
+}
+
+// A plan that fails validation gets an inline repair round inside planTask
+// before it ever reaches the conductor; if it STILL fails here it is
+// exceptional, and bounded by this cap so it can't loop on the happy path.
+const MAX_REJECTIONS = 3;
+
+// Expect-validity faults in a plan — the rules verification depends on:
+// state-changing steps need a REAL, specific expect (not missing, not
+// degenerate like {see:"yes"}, not a side-effect/objective check that only
+// re-reads content an earlier step typed). Returns [] for a valid plan. Used
+// both to build planTask's inline-repair validator and as the conductor's
+// backstop, so the same rules apply in both places.
+function collectExpectFaults(steps: ProgramStep[], objective: StepExpect[]): string[] {
+  if (steps.length === 0) return ['the plan has no steps'];
+  const faults: string[] = [];
+  const typedSoFar: string[] = [];
+  for (const [i, step] of steps.entries()) {
+    if (STATE_CHANGING.has(step.do) && !hasExpectation(step.expect)) {
+      faults.push(`step ${i + 1} (${describeStep(step)}) has no expect`);
+    } else if (step.expect) {
+      const degenerate = degenerateExpectReason(step.expect);
+      if (degenerate) faults.push(`step ${i + 1}: ${degenerate}`);
+      // Only a side-effect step is suspect: a plain type step verifying its
+      // OWN text landed is legitimate proof the typing worked
+      else if (step.sideEffect) {
+        const weak = weakSideEffectExpectReason(step.expect, typedSoFar);
+        if (weak) faults.push(`step ${i + 1} (${describeStep(step)}): ${weak}`);
+      }
+    }
+    if ((step.do === 'type' || step.do === 'type_focused') && step.text && step.textFrom !== 'collected') {
+      typedSoFar.push(step.text);
+    }
+  }
+  for (const [i, expect] of objective.entries()) {
+    const degenerate = degenerateExpectReason(expect);
+    if (degenerate) faults.push(`objective check ${i + 1}: ${degenerate}`);
+    else {
+      const weak = weakSideEffectExpectReason(expect, typedSoFar);
+      if (weak) faults.push(`objective check ${i + 1}: ${weak}`);
+    }
+  }
+  return faults;
 }
 
 const stripBullet = (line: string) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim();
@@ -147,6 +190,9 @@ export async function runPavTask(
   let goalText = task;
   let pendingQuestions: string[] | undefined;
   let plansUsed = 0;
+  // Pre-execution validation rejections (a plan that never ran) — bounded
+  // separately from the execution plan budget so they don't consume it
+  let rejections = 0;
 
   // Persist the run's knowledge so a stall/cancel can be resumed. Called
   // through the run; on a clean finish the state is cleared instead.
@@ -287,7 +333,12 @@ export async function runPavTask(
       const pageDigest = await scout();
       let planCall;
       try {
-        planCall = await planTask(goalText, journal, pageDigest, plansUsed, MAX_PLANS, signal);
+        planCall = await planTask(goalText, journal, pageDigest, plansUsed, MAX_PLANS, signal, plan =>
+          collectExpectFaults(
+            (plan.steps ?? []).slice(0, MAX_STEPS_PER_PLAN),
+            (plan.objective ?? []).filter(hasExpectation).slice(0, 4),
+          ),
+        );
       } catch (error) {
         if (signal.aborted) throw error;
         const message = error instanceof Error ? error.message : String(error);
@@ -334,76 +385,42 @@ export async function runPavTask(
         return;
       }
 
-      plansUsed++;
-      record.replans = plansUsed - 1;
       const steps = (plan.steps ?? []).slice(0, MAX_STEPS_PER_PLAN);
       const objective = (plan.objective ?? []).filter(hasExpectation).slice(0, 4);
 
-      // Conductor-enforced plan validity: no steps; a state-changing step with
-      // no expect; or a DEGENERATE expect (e.g. {"see":"yes"}) that would pass
-      // vacuously. Verification only means something if the expects are real.
-      const expectFaults: string[] = [];
-      // Literal text entered by type/type_focused steps SO FAR — a later
-      // side-effect step (or the objective) that only checks this text back is
-      // verification theater (it was true before the submit). textFrom:collected
-      // is data, not user-entered content, so it does not count.
-      const typedSoFar: string[] = [];
-      for (const [i, step] of steps.entries()) {
-        if (STATE_CHANGING.has(step.do) && !hasExpectation(step.expect)) {
-          expectFaults.push(`step ${i + 1} (${describeStep(step)}) has no expect`);
-        } else if (step.expect) {
-          const degenerate = degenerateExpectReason(step.expect);
-          if (degenerate) expectFaults.push(`step ${i + 1}: ${degenerate}`);
-          // Only a side-effect step is suspect: a plain type step verifying its
-          // OWN text landed is legitimate proof the typing worked
-          else if (step.sideEffect) {
-            const weak = weakSideEffectExpectReason(step.expect, typedSoFar);
-            if (weak) expectFaults.push(`step ${i + 1} (${describeStep(step)}): ${weak}`);
-          }
-        }
-        if ((step.do === 'type' || step.do === 'type_focused') && step.text && step.textFrom !== 'collected') {
-          typedSoFar.push(step.text);
-        }
-      }
-      for (const [i, expect] of objective.entries()) {
-        const degenerate = degenerateExpectReason(expect);
-        if (degenerate) expectFaults.push(`objective check ${i + 1}: ${degenerate}`);
-        else {
-          const weak = weakSideEffectExpectReason(expect, typedSoFar);
-          if (weak) expectFaults.push(`objective check ${i + 1}: ${weak}`);
-        }
-      }
-      const invalid = steps.length === 0 ? 'the plan has no steps' : expectFaults.join('; ');
-      if (invalid) {
-        // A plan rejected at validation still counts toward the repeat guard:
-        // re-proposing the SAME rejected plan means the planner is not learning
-        // from the reason, so stop honestly instead of burning the whole budget
+      // planTask already ran an inline repair round against these same rules,
+      // so a still-invalid plan here is exceptional (not the happy path). Do
+      // NOT consume an execution plan slot for a plan that never ran — bound it
+      // with a separate rejection cap instead, and keep the wording calm.
+      const faults = collectExpectFaults(steps, objective);
+      if (faults.length) {
+        rejections++;
+        const invalid = faults.join('; ');
         const rejectedFp = planFingerprint(steps);
         const repeated = priorFingerprints.includes(rejectedFp);
         priorFingerprints.push(rejectedFp);
         note(
-          `plan ${plansUsed} rejected by the runtime: ${invalid}. Emit a DIFFERENT plan that fixes this — do not repeat the rejected step or objective. Every state-changing step needs a REAL, specific expect, and side-effect/objective expects must verify the transition only success produces, not content already on the page.`,
+          `plan attempt rejected by the runtime: ${invalid}. Emit a DIFFERENT plan that fixes this — state-changing steps need a REAL, specific expect, and side-effect/objective expects must verify the transition only success produces, not content already on the page.`,
         );
-        // Show the rejected plan's steps too — otherwise a message like
-        // "step 4: ..." references a plan the user never saw
         const rejectedSteps = steps.map((s, n) => `${n + 1}. ${describeStep(s)}`).join('\n');
         postExecutionEvent(
           port,
           Actors.SYSTEM,
           'step.ok',
           taskId,
-          `Plan ${plansUsed} rejected — replanning.\n${rejectedSteps}\nReason: ${invalid}`,
+          `Refining the plan (${invalid.slice(0, 160)})`,
           planMeta,
         );
-        if (repeated) {
-          await report(
-            'partial',
-            `The planner kept proposing a plan the runtime rejects and could not produce a valid one: ${invalid}`,
-          );
+        logger.info('rejected plan:', rejectedSteps);
+        if (repeated || rejections >= MAX_REJECTIONS) {
+          await report('partial', `The planner could not produce a plan with valid success checks: ${invalid}`);
           return;
         }
         continue;
       }
+
+      plansUsed++;
+      record.replans = plansUsed - 1;
 
       // Repeat-plan guard: an identical action skeleton to a failed plan gets
       // one forced-difference warning, then the run stops honestly

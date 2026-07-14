@@ -302,15 +302,46 @@ export async function planTask(
   plansUsed: number,
   maxPlans: number,
   signal: AbortSignal,
+  /**
+   * Returns expect-validity faults in a plan, or [] when valid. When it finds
+   * faults, planTask hands the plan back to the model with the specific faults
+   * for ONE inline correction round — a cheap patch instead of throwing the
+   * plan away and replanning from scratch (which surfaced as a jarring "Plan
+   * rejected" opener and burned a plan slot every run).
+   */
+  validate?: (plan: PlanResult) => string[],
 ): Promise<{ result: PlanResult; usage: CallUsage }> {
   const pageSection = pageDigest ? `\n\nCURRENT PAGE (the active tab right now):\n${pageDigest}` : '';
-  const userContent =
+  const baseContent =
     `OBJECTIVE: ${objective}\n\nPLANS USED: ${plansUsed} of ${maxPlans}` + pageSection + journalSection(journal);
-  const { value: result, usage } = await callOrchestrator<PlanResult>(PLAN_SYSTEM_PROMPT, userContent, signal);
-  if (!['chat', 'plan', 'clarify'].includes(result.mode)) {
-    throw new Error(`Planner returned invalid mode: ${String(result.mode)}`);
+  const first = await callOrchestrator<PlanResult>(PLAN_SYSTEM_PROMPT, baseContent, signal);
+  if (!['chat', 'plan', 'clarify'].includes(first.value.mode)) {
+    throw new Error(`Planner returned invalid mode: ${String(first.value.mode)}`);
   }
-  return { result, usage };
+
+  if (first.value.mode !== 'plan' || !validate) return { result: first.value, usage: first.usage };
+  const faults = validate(first.value);
+  if (faults.length === 0) return { result: first.value, usage: first.usage };
+
+  // Inline repair round: give the model its own plan back plus the exact
+  // faults, and ask it to fix ONLY those.
+  const repairContent =
+    `${baseContent}\n\nYou proposed this plan:\n${JSON.stringify({ steps: first.value.steps, objective: first.value.objective })}\n\n` +
+    `It has these success-check (expect) faults:\n${faults.map(f => `- ${f}`).join('\n')}\n\n` +
+    'Return the CORRECTED plan in the same JSON format. Fix ONLY these faults — keep everything else the same.';
+  const repaired = await callOrchestrator<PlanResult>(PLAN_SYSTEM_PROMPT, repairContent, signal).catch(() => null);
+  const combined: CallUsage = {
+    model: repaired?.usage.model ?? first.usage.model,
+    cost: first.usage.cost === null && !repaired ? null : (first.usage.cost ?? 0) + (repaired?.usage.cost ?? 0),
+    promptTokens: (first.usage.promptTokens ?? 0) + (repaired?.usage.promptTokens ?? 0),
+    completionTokens: (first.usage.completionTokens ?? 0) + (repaired?.usage.completionTokens ?? 0),
+  };
+  // Use the repair only if it is a valid plan shape; otherwise fall through to
+  // the conductor's backstop with the original (it will reject/replan).
+  if (repaired && ['chat', 'plan', 'clarify'].includes(repaired.value.mode)) {
+    return { result: repaired.value, usage: combined };
+  }
+  return { result: first.value, usage: combined };
 }
 
 export async function reflectOnFailure(
