@@ -467,24 +467,51 @@ export async function runPavTask(
         const attempts = step.sideEffect ? 1 : 2;
         let observation = '';
         let passed = false;
+        let inconclusive = false;
         for (let attempt = 1; attempt <= attempts; attempt++) {
           const exec = await runner.execStep(step);
           if (!exec.ok) {
             observation = exec.message;
           } else if (hasExpectation(step.expect)) {
-            const verdict = await verifyExpect(tabId, step.expect!, signal);
-            if (verdict.pass) {
-              passed = true;
-              observation = verdict.observation;
-            } else {
-              observation = verdict.observation;
+            let verdict = await verifyExpect(tabId, step.expect!, signal);
+            // A perception failure is not proof the step failed. Re-VERIFY
+            // (never re-execute — that could repeat a side effect) a couple
+            // times before deciding; perception usually recovers.
+            for (let v = 0; v < 2 && verdict.inconclusive; v++) {
+              await new Promise(resolve => setTimeout(resolve, 1500));
+              verdict = await verifyExpect(tabId, step.expect!, signal);
             }
+            passed = verdict.pass;
+            inconclusive = Boolean(verdict.inconclusive);
+            observation = verdict.observation;
           } else {
             passed = true;
             observation = exec.message;
           }
-          if (passed) break;
+          // Do not re-execute on an unreadable page — proceed-with-caveat below
+          if (passed || inconclusive) break;
           if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, 1200));
+        }
+
+        // Perception could not read the page even after retries: this is a
+        // tooling failure, not proof the step failed. Proceed with a loud
+        // caveat rather than re-doing a possibly-completed action or looping —
+        // the objective verification at the end is the backstop.
+        if (!passed && inconclusive) {
+          postExecutionEvent(
+            port,
+            Actors.SYSTEM,
+            'step.ok',
+            taskId,
+            `${stepLabel} ⚠ could not verify (perception) — proceeding`,
+            '⚙ unverified',
+          );
+          note(
+            `step ${i + 1} could NOT be verified (perception failed, not a step failure) — proceeding: ${describeStep(step)}`,
+          );
+          await persist('running');
+          i++;
+          continue;
         }
 
         if (passed) {

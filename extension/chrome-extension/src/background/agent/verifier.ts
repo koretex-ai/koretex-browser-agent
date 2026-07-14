@@ -23,7 +23,11 @@ const logger = createLogger('verifier');
  * what lets the reflector distinguish a step fault from a plan fault.
  */
 
-const DEFAULT_VERIFY_TIMEOUT_MS = 8000;
+// A full perception read can take up to ~12s on a heavy/loading page; the
+// verify window must exceed that so at least one attempt completes before we
+// call it. URL checks do not wait on perception (see below), so navigation
+// still verifies in well under a second.
+const DEFAULT_VERIFY_TIMEOUT_MS = 12000;
 const POLL_INTERVAL_MS = 800;
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -32,6 +36,12 @@ export interface VerifyResult {
   pass: boolean;
   /** What the page/verifier actually shows — precise on failure */
   observation: string;
+  /**
+   * Perception could not READ the page to judge the content checks, so this
+   * is not a definitive failure — the step may well have worked. The conductor
+   * must not treat it as proof the step failed.
+   */
+  inconclusive?: boolean;
 }
 
 const normalize = (text: string) => text.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -93,11 +103,10 @@ export function weakSideEffectExpectReason(expect: StepExpect, priorTypedTexts: 
   return null;
 }
 
-// Check the deterministic fields against one snapshot; null = all hold
-function deterministicFailure(state: PerceptionSnapshot, expect: StepExpect): string | null {
-  if (expect.url && !state.url.toLowerCase().includes(expect.url.toLowerCase())) {
-    return `url is ${state.url} (expected it to contain "${expect.url}")`;
-  }
+// Check the perception-requiring fields (text/element/gone) against one
+// snapshot; null = all hold. The url field is checked separately from the tab
+// itself, without needing the content script.
+function contentFailure(state: PerceptionSnapshot, expect: StepExpect): string | null {
   if (expect.text && !normalize(state.pageText ?? '').includes(normalize(expect.text))) {
     return `the page text does not contain "${expect.text}" — page is "${state.title}" at ${state.url}`;
   }
@@ -130,22 +139,56 @@ export async function verifyExpect(
 ): Promise<VerifyResult> {
   if (!hasExpectation(expect)) return { pass: true, observation: 'no expect specified' };
 
-  const hasDeterministic = Boolean(expect.url || expect.text || expect.element || expect.gone);
+  const needsPerception = Boolean(expect.text || expect.element || expect.gone);
   const deadline = Date.now() + timeoutMs;
-  let lastFailure = 'could not read the page';
+  let lastFailure = '';
+  let gotState = false;
 
-  if (hasDeterministic) {
+  if (expect.url || needsPerception) {
     for (;;) {
       if (signal.aborted) throw new DOMException('aborted', 'AbortError');
-      const state = await capturePageState(tabId, false).catch(() => null);
-      if (state) {
-        const failure = deterministicFailure(state, expect);
-        if (failure === null) break;
-        lastFailure = failure;
+
+      // URL is on the TAB, not behind the content script — a heavy or still-
+      // loading page has a real URL even when its body cannot be read yet. So
+      // a navigate verifies without waiting on (or being blocked by) perception.
+      let urlOk = true;
+      if (expect.url) {
+        const tabUrl = await chrome.tabs
+          .get(tabId)
+          .then(t => t.url ?? '')
+          .catch(() => '');
+        urlOk = tabUrl.toLowerCase().includes(expect.url.toLowerCase());
+        if (!urlOk) lastFailure = `url is ${tabUrl || '(unknown)'} (expected it to contain "${expect.url}")`;
       }
+
+      let contentOk = true;
+      if (needsPerception) {
+        const state = await capturePageState(tabId, false).catch(() => null);
+        if (state) {
+          gotState = true;
+          const failure = contentFailure(state, expect);
+          contentOk = failure === null;
+          if (!contentOk) lastFailure = failure!;
+        } else {
+          contentOk = false; // could not read — may just be slow/loading
+        }
+      }
+
+      if (urlOk && contentOk) break;
       if (Date.now() >= deadline) {
+        // A wrong URL is a real, definitive failure. But if the page could
+        // never be READ for the content checks, that is INCONCLUSIVE — the
+        // step may have worked; do not report it as a proven failure.
+        if (expect.url && !urlOk) return { pass: false, observation: lastFailure };
+        if (needsPerception && !gotState) {
+          return {
+            pass: false,
+            inconclusive: true,
+            observation: `could not read the page to verify (${describeExpect(expect)}) — this is a perception/tooling problem, not proof the step failed; the action may have worked`,
+          };
+        }
         logger.info('verify fail:', lastFailure.slice(0, 160));
-        return { pass: false, observation: lastFailure };
+        return { pass: false, observation: lastFailure || 'the expected postcondition was not met' };
       }
       await sleep(POLL_INTERVAL_MS);
     }
