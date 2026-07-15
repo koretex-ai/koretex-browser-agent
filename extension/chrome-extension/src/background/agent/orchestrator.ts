@@ -405,11 +405,17 @@ async function callOrchestrator<T>(
       // SCREENSHOTS of the user's logged-in browser — route only to
       // providers that neither train on nor retain prompts (OpenRouter
       // provider preference).
-      provider: { data_collection: 'deny', ...(opts?.lowLatency ? { sort: 'throughput' } : {}) },
-      // Navigator replies must be JSON; MiMo intermittently leaks prose
-      // (3 malformed-retry round-trips in one live run) — ask the provider to
-      // enforce the format instead of paying retries
-      ...(opts?.lowLatency ? { reasoning: { effort: 'low' }, response_format: { type: 'json_object' } } : {}),
+      // sort:"price" — throughput-sorting routed every call to the MOST
+      // expensive MiMo host (DeepInfra, $2/M out vs $0.28 elsewhere)
+      provider: { data_collection: 'deny', ...(opts?.lowLatency ? { sort: 'price' } : {}) },
+      // Navigator turns need a look and a JSON verdict, not an essay. Live
+      // failure 2026-07-15: runaway chain-of-thought hit the default 16,384
+      // output cap ("length") on ~1/3 of turns — 58s + $0.033 each, and the
+      // truncation IS the "malformed reply". reasoning off + a hard output
+      // cap turn a runaway into a cheap fast retry instead of a stall.
+      ...(opts?.lowLatency
+        ? { reasoning: { enabled: false }, response_format: { type: 'json_object' }, max_tokens: 4096 }
+        : {}),
     });
     // Payload size is the prime suspect when calls die on SPECIFIC turns
     // (media-heavy pages → much larger screenshots) — make it visible
