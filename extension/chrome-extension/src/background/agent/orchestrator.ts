@@ -136,6 +136,8 @@ EXPECTS — every state-changing step (navigate, click, type, type_focused, key)
 "expect": {"see": "<yes/no question for a local vision model>"}
 Fields combine (all must hold). url/text/element/gone are deterministic — checked instantly against the live page and POLLED up to ~8 seconds, so you never need wait steps after navigation: the expect IS the wait. "see" is for outcomes only a screenshot can judge (canvas editors like Google Docs/Sheets; a purely visual layout) — it is the RIGHT tool for a visual-only transition, just slower, so reach for a deterministic field first when one captures the transition. Read-only steps (extract, harvest, scroll, wait, wait_for) may omit expect.
 
+GROUND EXPECTS IN OBSERVATION. For a destination you have NOT yet observed, assert only STRUCTURE: a url fragment, an "element" named by its FUNCTION ("compose editor", "search input", "text editor"), or a "gone". NEVER assert the exact wording of an unseen page — placeholders, headings, captions, and marketing copy vary by locale and A/B test, and a guessed string fails verification even when the action worked. Free-text "text" expects are only for content this run itself typed, or wording an observed page digest / the journal already showed you.
+
 AN EXPECT MUST BE SATISFIABLE ONLY BY SUCCESS — never by a state that is ALREADY TRUE before the step completes. The test: could this expect pass even if the action did nothing? If yes, it is worthless. In particular, verifying that content you just entered is still on the page does NOT prove it was submitted — that text was there the moment you typed it. For an action that SUBMITS / SENDS / CREATES / DELETES, verify the TRANSITION that only success produces — most reliably with "gone" (the input surface or dialog closed) and/or a confirmation "element" that only appears afterwards. E.g. after posting, the composer is gone: {"gone": "<the composer's placeholder or submit label>"}. Do NOT verify a submit by the persistence of the text you typed. The OBJECTIVE expects follow the same rule: they must describe the delivered outcome, checkable only after it truly happened.
 
 SIDE EFFECTS — steps that post, send, submit a form, purchase, or delete MUST carry "sideEffect": true (the runtime never auto-retries them) AND their expect must verify the post-action transition above, never the persistence of the entered content.
@@ -164,6 +166,65 @@ OBJECTIVE EXPECTS: "objective" is 1-4 expects that define success of the WHOLE t
 When collecting, collect against the INTENT, honoring every qualifier the user gave (who, where, what kind, how many). Over-collecting is fine — collected data is quality-filtered against the objective before it is written; searching for the wrong thing is not fine, because everything downstream inherits it.
 
 Rules: prefer the most direct, deterministic route the web offers (a URL that encodes the query beats typing into a search box; when you do type into one, the next step must be {"do":"key","combo":"Enter"}). Steps that submit content come AFTER the steps that enter it. When a step redoes work that an earlier attempt may have PARTIALLY completed, first restore a known clean state rather than adding on top of unknown leftovers. Never plan logging in or handling credentials — if the task requires being signed in, assume the user is; if a login wall appears, the run will stop and tell them. You are told PLANS USED n/N: when on the LAST plan, deliver the objective with the data already collected (a delivered partial beats an undelivered perfect).`;
+
+// ---- STEPWISE ENGINE (experimental) ----
+// One decision at a time: given the objective, the journal (what every prior
+// action verifiably did), and the LIVE page digest, choose the single next
+// step. There is no upfront plan to drift from and no separate reflector — a
+// failed step's observation lands in the journal and the next decision IS the
+// reaction to it. Expects are observation-grounded by construction: every
+// decision sees the actual page it is acting on.
+const NEXT_SYSTEM_PROMPT = `You are the navigator for a browser agent running in a Chrome side panel. You decide ONE step at a time. A deterministic runtime executes your step against the user's active tab, verifies its expect against the live page, and comes back to you with the outcome and a fresh page digest. Local models perceive (locate described elements, read page text, answer visual questions) but make no decisions.
+
+You are given: the OBJECTIVE, STEPS USED n of N, the JOURNAL (chronological — every prior step, whether it VERIFIED, and what the page actually showed), and CURRENT PAGE (the live tab digest: url, title, visible element labels). Decide from what the page NOW shows and what the journal PROVES has already happened — never from an imagined page. Before deciding, ask: what outcome would the user actually consider success, and what does THIS page offer as the most direct move toward it?
+
+Reply ONLY with a JSON object, one of:
+{"decision":"step","why":"<one short line: what this step accomplishes>","step":{...}}
+{"decision":"done","objective":[{"url":"..."} | {"text":"..."} | {"element":"..."} | {"gone":"..."} | {"see":"..."}]}  — the journal + current page show the objective is fully delivered; 1-3 objective checks verify the DELIVERED OUTCOME against the live page (same expect rules as steps).
+{"decision":"stop","reason":"..."}  — ONLY when the page POSITIVELY shows a blocker only the user can clear (a visible login form, a CAPTCHA). A disabled control or an odd page is NOT a blocker — it means a precondition is unmet; work out which action satisfies it.
+{"decision":"clarify","questions":["..."]}  — first decision only, and ONLY when the objective is genuinely ambiguous in a way that changes what you would do and no reasonable default exists. Otherwise assume the sane default and proceed.
+{"decision":"chat","message":""}  — the message is conversation, not a browser task (first decision only).
+
+${STEP_FORMS}
+
+Decision rules:
+- THE CURRENT PAGE IS WHERE THE BROWSER HAPPENS TO BE — treat it as an observation, not a license to act here. If the objective implies a destination or a fresh action, navigate to the canonical surface for it; act on the current page only when it is genuinely already the right context.
+- Prefer the most direct, deterministic route the web offers: a URL that encodes the query beats typing into a search box; after typing into a search box, the next step is {"do":"key","combo":"Enter"}.
+- When searching for a CLASS of things, translate the class into the concrete queries that will actually match (role-class → real titles; combine the user's qualifiers). Searching for the wrong thing poisons everything downstream.
+- If the journal shows a step FAILED, your next decision must ACCOUNT for that failure: diagnose from the recorded observation (it is what the page really showed), fix the cause — a different control, a different route, an unmet precondition — and never re-issue an action the journal shows failing twice unchanged. If the observation says the page could not be READ, that is a tooling blip, not a site failure: the same step once more is fine, but never conclude the site is broken from a read failure.
+- A step that redoes work a FAILED attempt may have partially completed must first restore a clean state (select-all/clear before retyping; close a half-open dialog) rather than piling onto unknown leftovers.
+- SIDE EFFECTS: if the journal shows a sideEffect step failed VERIFICATION, it may still have taken effect — never decide the same side-effect action again; verify its outcome first (navigate to where the result would be visible and check).
+- Never plan logging in or handling credentials — if a login wall appears, stop.
+- You are told STEPS USED n of N: when nearing the budget, deliver the objective with the data already collected — a delivered partial beats an undelivered perfect.
+- When the objective's deliverable needs collected data written somewhere, use "textFrom":"collected" on the writing step; have harvest/extract queries request items ALREADY FORMATTED for the destination.`;
+
+export interface NextResult {
+  decision: 'step' | 'done' | 'stop' | 'clarify' | 'chat';
+  why?: string;
+  step?: ProgramStep;
+  objective?: StepExpect[];
+  questions?: string[];
+  reason?: string;
+}
+
+export async function nextStep(
+  objective: string,
+  journal: string[],
+  pageDigest: string | undefined,
+  stepsUsed: number,
+  maxSteps: number,
+  signal: AbortSignal,
+  onProgress?: ProgressFn,
+): Promise<{ result: NextResult; usage: CallUsage }> {
+  const pageSection = pageDigest ? `\n\nCURRENT PAGE (the active tab right now):\n${pageDigest}` : '';
+  const content =
+    `OBJECTIVE: ${objective}\n\nSTEPS USED: ${stepsUsed} of ${maxSteps}` + pageSection + journalSection(journal);
+  const { value, usage } = await callOrchestrator<NextResult>(NEXT_SYSTEM_PROMPT, content, signal, onProgress);
+  if (!['step', 'done', 'stop', 'clarify', 'chat'].includes(value.decision)) {
+    throw new Error(`Navigator returned invalid decision: ${String(value.decision)}`);
+  }
+  return { result: value, usage };
+}
 
 const REFLECT_SYSTEM_PROMPT = `You are the reflector for a browser agent. One step of the current plan failed verification (or failed to execute). You get the OBJECTIVE, the JOURNAL, the PLAN, the FAILED STEP with its expect, and the OBSERVATION — what the page or verifier actually shows. Observe carefully, work out what ACTUALLY happened and why the expectation was not met, and only then decide whether the STEP was wrong or the PLAN is wrong.
 

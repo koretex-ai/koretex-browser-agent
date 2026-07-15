@@ -13,6 +13,12 @@ import { PLANNER_SYSTEM_PROMPT, VALIDATOR_SYSTEM_PROMPT, formatPlannerTurn, form
 import { isOrchestratorConfigured } from './orchestrator';
 import type { CallUsage } from './orchestrator';
 import { runPavTask } from './pav';
+import { runStepwiseTask } from './stepwise';
+
+// Engine experiment (2026-07-15): 'stepwise' decides ONE step at a time from
+// the live page + journal (no upfront plan, no separate reflector); 'pav'
+// compiles full plans and reflects on failures. Flip here to A/B on the bench.
+const CLOUD_ENGINE: 'pav' | 'stepwise' = 'stepwise';
 
 const logger = createLogger('agent');
 
@@ -606,7 +612,11 @@ export async function runAgentTask(
   };
   try {
     if (await isOrchestratorConfigured()) {
-      await runPavTask(port, tabId, taskId, task, record, signal);
+      if (CLOUD_ENGINE === 'stepwise') {
+        await runStepwiseTask(port, tabId, taskId, task, record, signal);
+      } else {
+        await runPavTask(port, tabId, taskId, task, record, signal);
+      }
     } else {
       await runLocalTask(port, tabId, taskId, task, record, signal);
     }

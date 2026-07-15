@@ -103,12 +103,37 @@ export function weakSideEffectExpectReason(expect: StepExpect, priorTypedTexts: 
   return null;
 }
 
+// Derive a screenshot question from a deterministic expect, for the vision
+// escalation path. `gone` is deliberately excluded: blind senses make a gone
+// check false-PASS (nothing found = "gone"), not false-fail, so it never
+// reaches the escalation branch — and asking a small VLM to prove absence
+// invites hallucinated confirmation.
+function visionQuestionFor(expect: StepExpect): string | null {
+  if (expect.text) {
+    return `Does the page visibly show the text "${expect.text.slice(0, 80)}" anywhere, including as a placeholder or inside a dialog?`;
+  }
+  if (expect.element) {
+    return `Is a control or element labeled "${expect.element.slice(0, 60)}" visible on the page?`;
+  }
+  return null;
+}
+
 // Check the perception-requiring fields (text/element/gone) against one
 // snapshot; null = all hold. The url field is checked separately from the tab
 // itself, without needing the content script.
 function contentFailure(state: PerceptionSnapshot, expect: StepExpect): string | null {
-  if (expect.text && !normalize(state.pageText ?? '').includes(normalize(expect.text))) {
-    return `the page text does not contain "${expect.text}" — page is "${state.title}" at ${state.url}`;
+  if (expect.text) {
+    const wanted = normalize(expect.text);
+    const inPageText = normalize(state.pageText ?? '').includes(wanted);
+    // Element labels/placeholders are a second, independent sense — pageText
+    // extraction can come back empty on heavy SPAs while the element digest is
+    // fine (x.com: page text "", but the composer + its placeholder were in
+    // the digest). A text expect holds if EITHER sense carries it.
+    const inElements =
+      inPageText || state.elements.some(el => normalize(`${el.text ?? ''} ${el.placeholder ?? ''}`).includes(wanted));
+    if (!inPageText && !inElements) {
+      return `neither the page text nor any element label contains "${expect.text}" — page is "${state.title}" at ${state.url}`;
+    }
   }
   if (expect.element && resolveTarget(state, expect.element) === null) {
     const labels = state.elements
@@ -144,6 +169,7 @@ export async function verifyExpect(
   let lastFailure = '';
   let lastReadError = '';
   let gotState = false;
+  let lastState: PerceptionSnapshot | null = null;
 
   if (expect.url || needsPerception) {
     for (;;) {
@@ -170,6 +196,7 @@ export async function verifyExpect(
         });
         if (state) {
           gotState = true;
+          lastState = state;
           const failure = contentFailure(state, expect);
           contentOk = failure === null;
           if (!contentOk) lastFailure = failure!;
@@ -184,15 +211,46 @@ export async function verifyExpect(
         // never be READ for the content checks, that is INCONCLUSIVE — the
         // step may have worked; do not report it as a proven failure.
         if (expect.url && !urlOk) return { pass: false, observation: lastFailure };
+
+        // ---- VISION ESCALATION ----
+        // House rule (same as ambiguous-click grounding): an uncertain local
+        // sense escalates to a stronger sense — it never concludes from
+        // blindness. If the deterministic senses were BLIND (no read at all,
+        // or a text check against effectively-empty page text, or an element
+        // check against an empty digest), ask the local VLM one screenshot
+        // question derived from the expect before failing. Vision only breaks
+        // ties where the alternative was certain failure, so even a mediocre
+        // verdict strictly improves on the status quo. Genuine mismatches on
+        // WORKING senses never escalate — a false vision YES must not
+        // override a correct deterministic failure.
+        const pageTextBlind = Boolean(expect.text) && (lastState?.pageText ?? '').trim().length < 40;
+        const elementsBlind = Boolean(expect.element) && (lastState?.elements.length ?? 0) === 0;
+        const blind = (needsPerception && !gotState) || pageTextBlind || elementsBlind;
+        let visionNote = '';
+        const question = blind ? visionQuestionFor(expect) : null;
+        if (question) {
+          const answer = await verifyVisual(tabId, question, signal).catch(error => {
+            logger.warning('vision escalation failed:', error);
+            return '';
+          });
+          if (/^\s*yes\b/i.test(answer.trim())) {
+            return {
+              pass: true,
+              observation: `deterministic senses could not read this (${describeExpect(expect)}) — vision confirmed it: ${answer.slice(0, 140)}`,
+            };
+          }
+          if (answer) visionNote = ` — vision was asked "${question}" and answered: ${answer.slice(0, 120)}`;
+        }
+
         if (needsPerception && !gotState) {
           return {
             pass: false,
             inconclusive: true,
-            observation: `could not read the page to verify (${describeExpect(expect)})${lastReadError ? ` — ${lastReadError}` : ''} — this is a perception/tooling problem, not proof the step failed; the action may have worked`,
+            observation: `could not read the page to verify (${describeExpect(expect)})${lastReadError ? ` — ${lastReadError}` : ''}${visionNote} — this is a perception/tooling problem, not proof the step failed; the action may have worked`,
           };
         }
         logger.info('verify fail:', lastFailure.slice(0, 160));
-        return { pass: false, observation: lastFailure || 'the expected postcondition was not met' };
+        return { pass: false, observation: (lastFailure || 'the expected postcondition was not met') + visionNote };
       }
       await sleep(POLL_INTERVAL_MS);
     }
