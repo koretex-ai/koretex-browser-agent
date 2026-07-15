@@ -20,6 +20,7 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
   const [orchestratorApiKey, setOrchestratorApiKey] = useState(DEFAULT_CHAT_SETTINGS.orchestratorApiKey);
   const [orchestratorModel, setOrchestratorModel] = useState(DEFAULT_CHAT_SETTINGS.orchestratorModel);
   const [orchestratorModelStrong, setOrchestratorModelStrong] = useState(DEFAULT_CHAT_SETTINGS.orchestratorModelStrong);
+  const [navigatorModel, setNavigatorModel] = useState(DEFAULT_CHAT_SETTINGS.navigatorModel);
   const [cloudExecutorEnabled, setCloudExecutorEnabled] = useState(DEFAULT_CHAT_SETTINGS.cloudExecutorEnabled);
   const [executorModelTier1, setExecutorModelTier1] = useState(DEFAULT_CHAT_SETTINGS.executorModelTier1);
   const [executorModelTier2, setExecutorModelTier2] = useState(DEFAULT_CHAT_SETTINGS.executorModelTier2);
@@ -37,6 +38,7 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
       setOrchestratorApiKey(settings.orchestratorApiKey);
       setOrchestratorModel(settings.orchestratorModel);
       setOrchestratorModelStrong(settings.orchestratorModelStrong);
+      setNavigatorModel(settings.navigatorModel);
       setCloudExecutorEnabled(settings.cloudExecutorEnabled);
       setExecutorModelTier1(settings.executorModelTier1);
       setExecutorModelTier2(settings.executorModelTier2);
@@ -73,6 +75,7 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
       orchestratorApiKey: orchestratorApiKey.trim(),
       orchestratorModel: orchestratorModel.trim(),
       orchestratorModelStrong: orchestratorModelStrong.trim(),
+      navigatorModel: navigatorModel.trim(),
       cloudExecutorEnabled,
       executorModelTier1: executorModelTier1.trim(),
       executorModelTier2: executorModelTier2.trim(),
@@ -201,9 +204,11 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
           </label>
         </div>
         <p className={`mb-4 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-          A strong cloud model plans, decomposes and validates tasks; the local models still do all the browsing.
-          Screenshots never leave your machine — only the task, step summaries and element labels are sent (plus page
-          text if the cloud executor fallback below is enabled). Without an API key the agent runs fully local.
+          A cloud navigator judges each step&apos;s outcome and decides the next one; local models still do the
+          clicking, typing, and bulk reading. PRIVACY: the navigator model receives a SCREENSHOT of the active tab
+          every step — including whatever is visible in your logged-in sessions. All cloud calls request
+          no-data-retention routing (providers that neither train on nor store prompts), but the images do leave your
+          machine. Without an API key the agent runs fully local and screenshots never leave.
         </p>
 
         <div className="space-y-4">
@@ -269,6 +274,46 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
                 </button>
               ))}
             </div>
+          </div>
+
+          <div>
+            <label htmlFor="navigator-model" className={labelClass}>
+              Navigator model (multimodal — judges each step from a screenshot)
+            </label>
+            <input
+              id="navigator-model"
+              type="text"
+              value={navigatorModel}
+              onChange={e => setNavigatorModel(e.target.value)}
+              placeholder={DEFAULT_CHAT_SETTINGS.navigatorModel}
+              className={inputClass}
+            />
+            <div className="mt-2 flex flex-wrap gap-2">
+              {[
+                { label: 'MiMo-V2.5 (recommended)', value: 'xiaomi/mimo-v2.5' },
+                { label: 'Qwen3.5-122B', value: 'qwen/qwen3.5-122b-a10b' },
+                { label: 'GLM-4.6V', value: 'z-ai/glm-4.6v' },
+                { label: 'GPT-5.6 Luna (control)', value: 'openai/gpt-5.6-luna' },
+              ].map(preset => (
+                <button
+                  key={preset.value}
+                  type="button"
+                  onClick={() => setNavigatorModel(preset.value)}
+                  className={`rounded-md border px-2 py-1 text-xs transition-colors ${
+                    navigatorModel === preset.value
+                      ? 'border-[#2BE87D] text-[#2BE87D]'
+                      : isDarkMode
+                        ? 'border-[#1F7A4A]/50 text-gray-400 hover:text-gray-200'
+                        : 'border-gray-300 text-gray-500 hover:text-gray-700'
+                  }`}>
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+            <p className={`mt-1 text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+              This is the model that sees screenshots. Leave empty to use the orchestrator model (it must then be
+              multimodal).
+            </p>
           </div>
 
           <div>
