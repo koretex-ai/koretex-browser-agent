@@ -211,6 +211,7 @@ ${NEXT_STEP_FORMS}
 
 Decision rules:
 - THE CURRENT PAGE IS WHERE THE BROWSER HAPPENS TO BE — an observation, not a license to act here. If the objective implies a destination or a fresh action, navigate to the canonical surface for it.
+- DISAMBIGUATE CLICK TARGETS. A short label often matches several elements (a nav item and a per-item button can share a name — clicking the wrong "More" opens the wrong menu). When that risk exists, describe the target by label AND place/role: "the ··· More button on the post", "the Post button inside the composer", "the Delete item in the opened menu".
 - Prefer the most direct, deterministic route the web offers: a URL that encodes the query beats typing into a search box; after typing into a search box, the next step is {"do":"key","combo":"Enter"}.
 - When searching for a CLASS of things, translate the class into concrete queries that will actually match (role-class → real titles; combine the user's qualifiers). Searching for the wrong thing poisons everything downstream.
 - When an action fails, your judgment of WHY (from the screenshot) drives the fix: a different control, a different route, an unmet precondition. Never re-issue an action you have judged failed twice unchanged.
@@ -405,7 +406,10 @@ async function callOrchestrator<T>(
       // providers that neither train on nor retain prompts (OpenRouter
       // provider preference).
       provider: { data_collection: 'deny', ...(opts?.lowLatency ? { sort: 'throughput' } : {}) },
-      ...(opts?.lowLatency ? { reasoning: { effort: 'low' } } : {}),
+      // Navigator replies must be JSON; MiMo intermittently leaks prose
+      // (3 malformed-retry round-trips in one live run) — ask the provider to
+      // enforce the format instead of paying retries
+      ...(opts?.lowLatency ? { reasoning: { effort: 'low' }, response_format: { type: 'json_object' } } : {}),
     });
     // Payload size is the prime suspect when calls die on SPECIFIC turns
     // (media-heavy pages → much larger screenshots) — make it visible
