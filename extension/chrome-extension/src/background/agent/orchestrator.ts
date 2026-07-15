@@ -193,7 +193,7 @@ Canvas-rendered editors (e.g. Google Docs/Sheets) render input literally, not as
 
 const NEXT_SYSTEM_PROMPT = `You are the navigator for a browser agent. You work ONE step at a time: a deterministic runtime executes each step you decide against the user's active tab, then returns to you with a fresh SCREENSHOT of the tab, a page digest, and the journal. Local models handle perception details (locating elements to click, bulk-reading page text); you make every decision.
 
-You are given: the OBJECTIVE, STEPS USED plus TIME REMAINING, LAST ACTION (the step just executed and what the executor reported), CURRENT PAGE (url, title, visible element labels, truncated page-text sample), the JOURNAL (chronological history: every step, your judgment of it, and data collected), and the SCREENSHOT of the tab as it looks right now.
+You are given: the OBJECTIVE, STEPS USED plus TIME REMAINING, sometimes an ACTIVE STRATEGY (standing orders from a deeper strategic review — always follow it), LAST ACTION (the step just executed and what the executor reported), CURRENT PAGE (url, title, visible element labels, truncated page-text sample), the JOURNAL (chronological history: every step, your judgment of it, and data collected), and the SCREENSHOT of the tab as it looks right now.
 
 YOUR FIRST JOB EVERY TURN IS TO JUDGE. Look at the screenshot and state what you actually see and what the LAST ACTION accomplished — as evidence, not hope: "the composer is open and empty", "the post now appears at the top of the feed", "a dialog is asking to confirm deletion", "the page is still loading". Then rule the last action succeeded, failed, or uncertain. Judge ONLY from visible evidence; wanting it to have worked is not evidence. If the page looks mid-load (spinners, blank regions), say so and prefer a short {"do":"wait"} over guessing.
 
@@ -201,6 +201,7 @@ YOUR SECOND JOB IS TO DECIDE the single next step that most directly advances th
 
 Reply ONLY with a JSON object:
 {"assessment":"<1-2 sentences: what the screenshot shows and what the last action did>","last_action":"succeeded"|"failed"|"uncertain"|"none","decision":"step","why":"<one line: what this step accomplishes>","step":{...}}
+Add "stuck": true to your reply when you notice you are CIRCLING — repeating variations of an approach that keeps not working (a control that reverts, results that stay empty, the same page state recurring). A deeper strategic review will then chart a different route; flagging early beats burning turns.
 Other decisions (same JSON shape, with assessment and last_action always present):
 "done" — the screenshot/journal show the objective FULLY delivered (every part of it — including any cleanup the user asked for). Your assessment must state the visible evidence.
 "stop" with "reason" — ONLY when the page POSITIVELY shows a blocker only the user can clear (a visible login form, a CAPTCHA). A disabled control or an odd page is a precondition to satisfy, not a blocker.
@@ -228,6 +229,64 @@ export interface NextResult {
   step?: ProgramStep;
   questions?: string[];
   reason?: string;
+  /** Navigator noticed it is circling — the conductor triggers a strategic review */
+  stuck?: boolean;
+}
+
+// ---- STRATEGIC REVIEW (the altitude the fast loop deliberately lacks) ----
+// Called by the conductor only when a stuck pattern fires: repeated judged
+// failures, guard rejections, state reverts, or the navigator flagging
+// itself. One deep call — reasoning ON — that diagnoses the ROOT CAUSE and
+// sets standing orders (an ACTIVE STRATEGY) the myopic per-step loop then
+// follows.
+const REVIEW_SYSTEM_PROMPT = `You are the strategist for a browser agent. The fast per-step navigator has STOPPED MAKING PROGRESS — you are called only when a stuck pattern fires. You get the OBJECTIVE, TIME REMAINING, the STUCK SIGNAL (which pattern fired), any ACTIVE STRATEGY already in force, the JOURNAL (full history: every step, its judgment, data collected), and the CURRENT PAGE digest plus SCREENSHOT.
+
+STEP BACK AND THINK DEEPLY. Diagnose the ROOT CAUSE — not "the click failed" but why the whole approach is not working: a capability gated behind a paywall or upsell (a control that reverts or is blocked by an upgrade prompt is UNAVAILABLE on this account — route around it, never fight it), the wrong surface for the goal, a search phrased so it matches nothing, a page that requires state the run never established. Then chart a DIFFERENT route to the objective — the web usually offers several: keywords in the query instead of UI filters, a URL that encodes the search, a different page or surface, a simpler deliverable path. Never propose retrying what the journal shows failing repeatedly. Prefer routes that need fewer privileged features. Respect the remaining time: a simple route that delivers a partial beats an elegant long one.
+
+Reply ONLY with a JSON object:
+{"diagnosis":"<root cause, 1-2 sentences>","verdict":"strategy","strategy":"<standing orders for the navigator: what to do INSTEAD and what to STOP attempting — concrete, 1-3 sentences>"}
+{"diagnosis":"...","verdict":"done"}  — the journal and screenshot show the objective is ALREADY fully delivered.
+{"diagnosis":"...","verdict":"blocked","reason":"<what only the user can do>"}  — ONLY for walls no strategy can route around: a login wall, a CAPTCHA, the site fundamentally lacking the capability.`;
+
+export interface ReviewResult {
+  diagnosis?: string;
+  verdict: 'strategy' | 'done' | 'blocked';
+  strategy?: string;
+  reason?: string;
+}
+
+export interface ReviewArgs {
+  objective: string;
+  journal: string[];
+  pageDigest?: string;
+  screenshotDataUrl?: string;
+  activeStrategy?: string;
+  stuckSignal: string;
+  timeRemainingMin?: number;
+}
+
+export async function strategicReview(
+  args: ReviewArgs,
+  signal: AbortSignal,
+  onProgress?: ProgressFn,
+): Promise<{ result: ReviewResult; usage: CallUsage }> {
+  const { navigatorModel } = await chatSettingsStore.getSettings();
+  const content =
+    `OBJECTIVE: ${args.objective}` +
+    (args.timeRemainingMin !== undefined ? `\nTIME REMAINING: about ${args.timeRemainingMin} minute(s)` : '') +
+    `\n\nSTUCK SIGNAL: ${args.stuckSignal}` +
+    (args.activeStrategy ? `\n\nACTIVE STRATEGY (already in force — it has NOT worked):\n${args.activeStrategy}` : '') +
+    (args.pageDigest ? `\n\nCURRENT PAGE (the active tab right now):\n${args.pageDigest}` : '') +
+    journalSection(args.journal);
+  const { value, usage } = await callOrchestrator<ReviewResult>(REVIEW_SYSTEM_PROMPT, content, signal, onProgress, {
+    imageDataUrl: args.screenshotDataUrl,
+    modelOverride: navigatorModel || undefined,
+    deepReview: true,
+  });
+  if (!['strategy', 'done', 'blocked'].includes(value.verdict)) {
+    throw new Error(`Strategist returned invalid verdict: ${String(value.verdict)}`);
+  }
+  return { result: value, usage };
 }
 
 export interface NextArgs {
@@ -240,6 +299,8 @@ export interface NextArgs {
   maxSteps: number;
   /** Minutes left on the wall-clock budget — the budget the navigator plans against */
   timeRemainingMin?: number;
+  /** Standing orders from the last strategic review, pinned into every turn */
+  activeStrategy?: string;
   /** Screenshot of the tab as it looks now (data URL); omit if capture failed */
   screenshotDataUrl?: string;
 }
@@ -258,8 +319,11 @@ export async function nextStep(
     args.timeRemainingMin !== undefined
       ? `\n\nSTEPS USED: ${args.stepsUsed} · TIME REMAINING: about ${args.timeRemainingMin} minute(s)`
       : `\n\nSTEPS USED: ${args.stepsUsed} of ${args.maxSteps}`;
+  const strategySection = args.activeStrategy
+    ? `\n\nACTIVE STRATEGY (standing orders from a strategic review after earlier approaches failed — FOLLOW THIS, and do not retry what it rules out):\n${args.activeStrategy}`
+    : '';
   const buildContent = (withScreenshot: boolean) =>
-    `OBJECTIVE: ${args.objective}${budgetLine}` +
+    `OBJECTIVE: ${args.objective}${budgetLine}${strategySection}` +
     lastSection +
     pageSection +
     (withScreenshot
@@ -373,6 +437,12 @@ interface CallOpts {
    * turn needs a look and a verdict, not minutes of chain-of-thought.
    */
   lowLatency?: boolean;
+  /**
+   * Strategic-review call: same provider routing as lowLatency, but reasoning
+   * stays ON and the output budget is generous — this is the one call where
+   * deep thinking is the point.
+   */
+  deepReview?: boolean;
 }
 
 // Network-transient errors (connection drop, provider blip, timeout) get one
@@ -418,7 +488,9 @@ async function callOrchestrator<T>(
       // and excludes the expensive tier; throughput picks the fastest of them.
       provider: {
         data_collection: 'deny',
-        ...(opts?.lowLatency ? { sort: 'throughput', max_price: { prompt: 0.25, completion: 0.6 } } : {}),
+        ...(opts?.lowLatency || opts?.deepReview
+          ? { sort: 'throughput', max_price: { prompt: 0.25, completion: 0.6 } }
+          : {}),
       },
       // Navigator turns need a look and a JSON verdict, not an essay. Live
       // failure 2026-07-15: runaway chain-of-thought hit the default 16,384
@@ -428,6 +500,9 @@ async function callOrchestrator<T>(
       ...(opts?.lowLatency
         ? { reasoning: { enabled: false }, response_format: { type: 'json_object' }, max_tokens: 4096 }
         : {}),
+      // Strategic reviews are the inverse trade: reasoning stays ON (deep
+      // thinking is the point), with a generous-but-bounded output budget
+      ...(opts?.deepReview ? { response_format: { type: 'json_object' }, max_tokens: 8192 } : {}),
     });
     // Payload size is the prime suspect when calls die on SPECIFIC turns
     // (media-heavy pages → much larger screenshots) — make it visible

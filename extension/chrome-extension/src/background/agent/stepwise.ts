@@ -4,7 +4,7 @@ import { createLogger } from '../log';
 import { postExecutionEvent } from '../events';
 import { capturePageState } from '../perception';
 import { streamCloudChatReply } from './chat';
-import { nextStep, reportOutcome, curateCollection } from './orchestrator';
+import { nextStep, strategicReview, reportOutcome, curateCollection } from './orchestrator';
 import type { ProgramStep, CallUsage } from './orchestrator';
 import { createStepRunner, describeStep, listLines, itemKey } from './program';
 
@@ -43,6 +43,12 @@ const JOURNAL_MAX_LINES = 80;
 const MAX_CONSECUTIVE_FAILURES = 4;
 // Consecutive runtime-rejected decisions; any EXECUTED step resets the count
 const MAX_REJECTIONS = 3;
+// Strategic reviews per run — the escalation tier is bounded like everything
+const MAX_REVIEWS = 3;
+// Stuck signals that trigger a review (deterministic, evaluated in code):
+// same action judged failed twice, this many consecutive failed judgments,
+// any guard rejection, or the navigator flagging itself as circling
+const REVIEW_AFTER_CONSECUTIVE_FAILURES = 2;
 const RESUME_WINDOW_MS = 30 * 60_000;
 
 // Give the page time to react before photographing it — a screenshot of a
@@ -337,6 +343,90 @@ export async function runStepwiseTask(
     urlPath: string;
   } | null = null;
 
+  // ---- STRATEGIC REVIEW (the altitude the fast loop deliberately lacks) ----
+  // The per-step navigator is myopic by design; when a stuck pattern fires,
+  // one deep call (reasoning ON, full journal + screenshot) diagnoses the
+  // root cause and sets an ACTIVE STRATEGY — standing orders pinned into
+  // every subsequent turn until superseded. Bounded like everything else.
+  let activeStrategy = '';
+  let lastStrategyText = '';
+  let reviewsUsed = 0;
+  const runReview = async (
+    stuckSignal: string,
+    observed: { digest?: string; screenshot?: string },
+  ): Promise<'continue' | 'ended'> => {
+    reviewsUsed++;
+    heartbeat(`Stepping back for a strategic review (${reviewsUsed}/${MAX_REVIEWS})…`);
+    let call;
+    try {
+      call = await strategicReview(
+        {
+          objective: goalText,
+          journal,
+          pageDigest: observed.digest,
+          screenshotDataUrl: observed.screenshot,
+          activeStrategy: activeStrategy || undefined,
+          stuckSignal,
+          timeRemainingMin: Math.max(0, Math.round((deadline - Date.now()) / 60_000)),
+        },
+        signal,
+        heartbeat,
+      );
+    } catch (error) {
+      if (signal.aborted) throw error;
+      logger.warning('strategic review call failed:', error);
+      note('a strategic review was attempted but the call failed — continuing without it');
+      return 'continue';
+    }
+    const meta = track(call.usage);
+    const review = call.result;
+    logger.info('review:', JSON.stringify(review).slice(0, 400));
+    if (review.verdict === 'done') {
+      note(`strategic review: objective already delivered — ${(review.diagnosis ?? '').slice(0, 160)}`);
+      postExecutionEvent(
+        port,
+        Actors.SYSTEM,
+        'step.ok',
+        taskId,
+        `🧭 Review: objective already delivered — ${(review.diagnosis ?? '').slice(0, 180)}`,
+        meta,
+      );
+      await report('achieved', '');
+      return 'ended';
+    }
+    if (review.verdict === 'blocked') {
+      note(`strategic review: blocked — ${(review.reason ?? review.diagnosis ?? '').slice(0, 200)}`);
+      postExecutionEvent(
+        port,
+        Actors.SYSTEM,
+        'step.ok',
+        taskId,
+        `🧭 Review: blocked — ${(review.reason ?? review.diagnosis ?? '').slice(0, 180)}`,
+        meta,
+      );
+      await report('partial', `Blocked: ${review.reason ?? 'the strategist found no route around the obstacle'}`);
+      return 'ended';
+    }
+    const strategy = (review.strategy ?? '').trim();
+    if (!strategy || strategy === lastStrategyText) {
+      // The strategist has no better idea than last time — stop honestly
+      note('strategic review produced no new strategy — stopping');
+      await report('partial', 'A strategic review could not find a different viable approach.');
+      return 'ended';
+    }
+    lastStrategyText = strategy;
+    activeStrategy = strategy;
+    // Fresh start under new orders
+    consecutiveFailures = 0;
+    rejections = 0;
+    note(
+      `STRATEGIC REVIEW (${stuckSignal.slice(0, 80)}): ${(review.diagnosis ?? '').slice(0, 140)} → new strategy in force`,
+    );
+    postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `🧭 Strategy: ${strategy.slice(0, 240)}`, meta);
+    await persist('running');
+    return 'continue';
+  };
+
   try {
     heartbeat('Looking at the page and deciding the first step…');
     while (stepsUsed < MAX_STEPS) {
@@ -366,6 +456,7 @@ export async function runStepwiseTask(
             stepsUsed,
             maxSteps: MAX_STEPS,
             timeRemainingMin: Math.max(0, Math.round((deadline - Date.now()) / 60_000)),
+            activeStrategy: activeStrategy || undefined,
             screenshotDataUrl: observed.screenshot,
           },
           signal,
@@ -398,9 +489,16 @@ export async function runStepwiseTask(
           '👁 judged (same call as the next decision — cost shown there)',
         );
         note(`judge on step ${lastAction.stepNo} (${lastAction.description.slice(0, 80)}): ${verdict} — ${assessment}`);
+        let stuckSignal: string | null = null;
         if (verdict === 'failed') {
           consecutiveFailures++;
-          failedCounts.set(lastAction.fingerprint, (failedCounts.get(lastAction.fingerprint) ?? 0) + 1);
+          const fpFailures = (failedCounts.get(lastAction.fingerprint) ?? 0) + 1;
+          failedCounts.set(lastAction.fingerprint, fpFailures);
+          if (fpFailures >= 2) {
+            stuckSignal = `the same action has now been judged failed ${fpFailures} times: ${lastAction.description.slice(0, 100)}`;
+          } else if (consecutiveFailures >= REVIEW_AFTER_CONSECUTIVE_FAILURES) {
+            stuckSignal = `${consecutiveFailures} consecutive steps were judged failed`;
+          }
         } else if (verdict === 'succeeded') {
           consecutiveFailures = 0;
         }
@@ -417,8 +515,35 @@ export async function runStepwiseTask(
           return;
         }
         await persist('running');
+        if (stuckSignal && reviewsUsed < MAX_REVIEWS && !outOfTime()) {
+          const outcomeOfReview = await runReview(stuckSignal, observed);
+          if (outcomeOfReview === 'ended') {
+            outcome = record.outcome === 'ok' ? 'ok' : 'fail';
+            outcomeSummary = 'ended by strategic review';
+            return;
+          }
+          // Re-decide from a fresh observation under the new strategy —
+          // this turn's decision predates the strategy
+          continue;
+        }
       } else if (assessment) {
         note(`observed: ${assessment}`);
+      }
+
+      // Navigator flagged itself as circling — escalate before acting on a
+      // decision that is likely part of the circle
+      if (decision.decision === 'step' && decision.stuck && reviewsUsed < MAX_REVIEWS && !outOfTime()) {
+        note('the navigator flagged that it is circling without progress');
+        const outcomeOfReview = await runReview(
+          'the navigator itself flagged that it is circling without making progress',
+          observed,
+        );
+        if (outcomeOfReview === 'ended') {
+          outcome = record.outcome === 'ok' ? 'ok' : 'fail';
+          outcomeSummary = 'ended by strategic review';
+          return;
+        }
+        continue;
       }
 
       // ---- ACT ON THE DECISION ----
@@ -511,6 +636,17 @@ export async function runStepwiseTask(
           outcomeSummary = 'side-effect repeat blocked';
           return;
         }
+        if (reviewsUsed < MAX_REVIEWS && !outOfTime()) {
+          const outcomeOfReview = await runReview(
+            'the runtime blocked a re-issue of a side-effect action whose outcome is unconfirmed',
+            observed,
+          );
+          if (outcomeOfReview === 'ended') {
+            outcome = record.outcome === 'ok' ? 'ok' : 'fail';
+            outcomeSummary = 'ended by strategic review';
+            return;
+          }
+        }
         continue;
       }
       if ((failedCounts.get(fingerprint) ?? 0) >= 2) {
@@ -523,6 +659,17 @@ export async function runStepwiseTask(
           outcome = 'fail';
           outcomeSummary = 'repeat-decision loop';
           return;
+        }
+        if (reviewsUsed < MAX_REVIEWS && !outOfTime()) {
+          const outcomeOfReview = await runReview(
+            `the navigator decided an action that has already failed twice: ${describeStep(step).slice(0, 100)}`,
+            observed,
+          );
+          if (outcomeOfReview === 'ended') {
+            outcome = record.outcome === 'ok' ? 'ok' : 'fail';
+            outcomeSummary = 'ended by strategic review';
+            return;
+          }
         }
         continue;
       }
