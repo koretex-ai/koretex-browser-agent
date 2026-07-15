@@ -167,61 +167,103 @@ When collecting, collect against the INTENT, honoring every qualifier the user g
 
 Rules: prefer the most direct, deterministic route the web offers (a URL that encodes the query beats typing into a search box; when you do type into one, the next step must be {"do":"key","combo":"Enter"}). Steps that submit content come AFTER the steps that enter it. When a step redoes work that an earlier attempt may have PARTIALLY completed, first restore a known clean state rather than adding on top of unknown leftovers. Never plan logging in or handling credentials — if the task requires being signed in, assume the user is; if a login wall appears, the run will stop and tell them. You are told PLANS USED n/N: when on the LAST plan, deliver the objective with the data already collected (a delivered partial beats an undelivered perfect).`;
 
-// ---- STEPWISE ENGINE (experimental) ----
-// One decision at a time: given the objective, the journal (what every prior
-// action verifiably did), and the LIVE page digest, choose the single next
-// step. There is no upfront plan to drift from and no separate reflector — a
-// failed step's observation lands in the journal and the next decision IS the
-// reaction to it. Expects are observation-grounded by construction: every
-// decision sees the actual page it is acting on.
-const NEXT_SYSTEM_PROMPT = `You are the navigator for a browser agent running in a Chrome side panel. You decide ONE step at a time. A deterministic runtime executes your step against the user's active tab, verifies its expect against the live page, and comes back to you with the outcome and a fresh page digest. Local models perceive (locate described elements, read page text, answer visual questions) but make no decisions.
+// ---- STEPWISE ENGINE ----
+// One JUDGE-AND-DECIDE call per step: a multimodal navigator receives a
+// SCREENSHOT of the live tab (plus the digest and journal), judges what the
+// last action actually did from that evidence, and decides the single next
+// step. There are no planner-authored expects to get wrong — outcomes are
+// judged after the fact from pixels, not predicted in advance.
+const NEXT_STEP_FORMS = `Step forms (the runtime executes these EXACTLY — put real values in, never placeholders):
+{"do":"navigate","url":"https://..."}
+{"do":"click","target":"<visible label of the element, e.g. Start a post>"}
+{"do":"type","target":"<label/placeholder of the input>","text":"..."}  (replaces the input's content; if no labeled input matches, the runtime visually locates the field, focuses it, and types)
+{"do":"type_focused","text":"line1\\nline2"}  (trusted keyboard input into whatever currently has focus — the way to type into any RICH EDITOR that is not a plain form field: canvas editors like Google Docs/Sheets, and contenteditable composers like post/message boxes. Focus it first — click it, or it focuses itself when opened)
+{"do":"key","combo":"Enter"}  (submit a search box after typing into it)
+{"do":"scroll","direction":"down","times":2}
+{"do":"extract","query":"<what to read from the page text>"}  (a local reader answers from the FULL page text; list items are stored in the collection — also the way to read more than the truncated text sample shows)
+{"do":"harvest","query":"<items to collect>","until":10}  (scroll+extract loop until ~N unique items are collected or results stop yielding — USE THIS for any collect-N-things-from-a-feed work; the runtime deduplicates; 0 items fails the step)
+{"do":"wait","ms":2000}  (the page is visibly still loading — look again after a pause)
+Targets are element DESCRIPTIONS (visible text labels), resolved on the live page by label matching with a vision fallback — never invent element indices.
 
-You are given: the OBJECTIVE, STEPS USED n of N, the JOURNAL (chronological — every prior step, whether it VERIFIED, and what the page actually showed), and CURRENT PAGE (the live tab digest: url, title, visible element labels, and a TRUNCATED sample of the page text). Decide from what the page NOW shows and what the journal PROVES has already happened — never from an imagined page. Before deciding, ask: what outcome would the user actually consider success, and what does THIS page offer as the most direct move toward it?
+SIDE EFFECTS — a step that posts, sends, submits a form, purchases, or deletes MUST carry "sideEffect": true. The runtime gives such steps exactly ONE attempt and will refuse a blind re-issue: if a side-effect's outcome is unclear, your next move is to LOOK for its result (navigate to where it would be visible, extract), never to do it again.
 
-TO CONFIRM WHETHER CONTENT EXISTS on a page — a post published, a row saved, a message sent — use an {"do":"extract"} step and read the answer in the journal: element labels only cover interactive controls, and the text sample is truncated, so "I don't see it in the digest" is NOT evidence of absence. Never fall back to redoing an action because you could not see its result; check for the result first.
+WRITING COLLECTED DATA: a type/type_focused step may use "textFrom":"collected" — the runtime inserts EVERY item collected so far, complete and verbatim, below the optional "text" (which becomes a header line). This is the ONLY reliable way to write a collected dataset — journal digests are truncated, so never paste them into "text" yourself. Have harvest/extract queries request each item ALREADY IN THE FORM it should appear at the destination (tab-separated only where tabs are meaningful, e.g. a spreadsheet grid).
 
-Reply ONLY with a JSON object, one of:
-{"decision":"step","why":"<one short line: what this step accomplishes>","step":{...}}
-{"decision":"done","objective":[{"url":"..."} | {"text":"..."} | {"element":"..."} | {"gone":"..."} | {"see":"..."}]}  — the journal + current page show the objective is fully delivered; 1-3 objective checks verify the DELIVERED OUTCOME against the live page (same expect rules as steps).
-{"decision":"stop","reason":"..."}  — ONLY when the page POSITIVELY shows a blocker only the user can clear (a visible login form, a CAPTCHA). A disabled control or an odd page is NOT a blocker — it means a precondition is unmet; work out which action satisfies it.
-{"decision":"clarify","questions":["..."]}  — first decision only, and ONLY when the objective is genuinely ambiguous in a way that changes what you would do and no reasonable default exists. Otherwise assume the sane default and proceed.
-{"decision":"chat","message":""}  — the message is conversation, not a browser task (first decision only).
+Canvas-rendered editors (e.g. Google Docs/Sheets) render input literally, not as markup — type into them with type_focused (they focus themselves when opened; clicking around first can steal focus).`;
 
-${STEP_FORMS}
+const NEXT_SYSTEM_PROMPT = `You are the navigator for a browser agent. You work ONE step at a time: a deterministic runtime executes each step you decide against the user's active tab, then returns to you with a fresh SCREENSHOT of the tab, a page digest, and the journal. Local models handle perception details (locating elements to click, bulk-reading page text); you make every decision.
+
+You are given: the OBJECTIVE, STEPS USED n of N, LAST ACTION (the step just executed and what the executor reported), CURRENT PAGE (url, title, visible element labels, truncated page-text sample), the JOURNAL (chronological history: every step, your judgment of it, and data collected), and the SCREENSHOT of the tab as it looks right now.
+
+YOUR FIRST JOB EVERY TURN IS TO JUDGE. Look at the screenshot and state what you actually see and what the LAST ACTION accomplished — as evidence, not hope: "the composer is open and empty", "the post now appears at the top of the feed", "a dialog is asking to confirm deletion", "the page is still loading". Then rule the last action succeeded, failed, or uncertain. Judge ONLY from visible evidence; wanting it to have worked is not evidence. If the page looks mid-load (spinners, blank regions), say so and prefer a short {"do":"wait"} over guessing.
+
+YOUR SECOND JOB IS TO DECIDE the single next step that most directly advances the objective from the page as it ACTUALLY is.
+
+Reply ONLY with a JSON object:
+{"assessment":"<1-2 sentences: what the screenshot shows and what the last action did>","last_action":"succeeded"|"failed"|"uncertain"|"none","decision":"step","why":"<one line: what this step accomplishes>","step":{...}}
+Other decisions (same JSON shape, with assessment and last_action always present):
+"done" — the screenshot/journal show the objective FULLY delivered (every part of it — including any cleanup the user asked for). Your assessment must state the visible evidence.
+"stop" with "reason" — ONLY when the page POSITIVELY shows a blocker only the user can clear (a visible login form, a CAPTCHA). A disabled control or an odd page is a precondition to satisfy, not a blocker.
+"clarify" with "questions":[1-3] — first decision only, and only when no reasonable default exists.
+"chat" — the message is conversation, not a browser task (first decision only).
+
+${NEXT_STEP_FORMS}
 
 Decision rules:
-- THE CURRENT PAGE IS WHERE THE BROWSER HAPPENS TO BE — treat it as an observation, not a license to act here. If the objective implies a destination or a fresh action, navigate to the canonical surface for it; act on the current page only when it is genuinely already the right context.
+- THE CURRENT PAGE IS WHERE THE BROWSER HAPPENS TO BE — an observation, not a license to act here. If the objective implies a destination or a fresh action, navigate to the canonical surface for it.
 - Prefer the most direct, deterministic route the web offers: a URL that encodes the query beats typing into a search box; after typing into a search box, the next step is {"do":"key","combo":"Enter"}.
-- When searching for a CLASS of things, translate the class into the concrete queries that will actually match (role-class → real titles; combine the user's qualifiers). Searching for the wrong thing poisons everything downstream.
-- If the journal shows a step FAILED, your next decision must ACCOUNT for that failure: diagnose from the recorded observation (it is what the page really showed), fix the cause — a different control, a different route, an unmet precondition — and never re-issue an action the journal shows failing twice unchanged. If the observation says the page could not be READ, that is a tooling blip, not a site failure: the same step once more is fine, but never conclude the site is broken from a read failure.
-- A step that redoes work a FAILED attempt may have partially completed must first restore a clean state (select-all/clear before retyping; close a half-open dialog) rather than piling onto unknown leftovers.
-- SIDE EFFECTS: if the journal shows a sideEffect step failed VERIFICATION, it may still have taken effect — never decide the same side-effect action again; verify its outcome first (navigate to where the result would be visible and check).
+- When searching for a CLASS of things, translate the class into concrete queries that will actually match (role-class → real titles; combine the user's qualifiers). Searching for the wrong thing poisons everything downstream.
+- When an action fails, your judgment of WHY (from the screenshot) drives the fix: a different control, a different route, an unmet precondition. Never re-issue an action you have judged failed twice unchanged.
+- A step that redoes work a failed attempt may have PARTIALLY completed must first restore a clean state (select-all/clear before retyping; close a half-open dialog).
+- TO CONFIRM whether content exists beyond the visible screenshot (a saved row, an older post), use extract — absence from the digest or a scrolled-away screenshot is not evidence of absence.
 - Never plan logging in or handling credentials — if a login wall appears, stop.
-- You are told STEPS USED n of N: when nearing the budget, deliver the objective with the data already collected — a delivered partial beats an undelivered perfect.
-- When the objective's deliverable needs collected data written somewhere, use "textFrom":"collected" on the writing step; have harvest/extract queries request items ALREADY FORMATTED for the destination.`;
+- You are told STEPS USED n of N: when nearing the budget, deliver the objective with the data already collected — a delivered partial beats an undelivered perfect.`;
 
 export interface NextResult {
+  assessment?: string;
+  last_action?: 'succeeded' | 'failed' | 'uncertain' | 'none';
   decision: 'step' | 'done' | 'stop' | 'clarify' | 'chat';
   why?: string;
   step?: ProgramStep;
-  objective?: StepExpect[];
   questions?: string[];
   reason?: string;
 }
 
+export interface NextArgs {
+  objective: string;
+  journal: string[];
+  pageDigest?: string;
+  /** The step just executed, for the judge — null on the first turn */
+  lastAction?: { description: string; execNote: string } | null;
+  stepsUsed: number;
+  maxSteps: number;
+  /** Screenshot of the tab as it looks now (data URL); omit if capture failed */
+  screenshotDataUrl?: string;
+}
+
 export async function nextStep(
-  objective: string,
-  journal: string[],
-  pageDigest: string | undefined,
-  stepsUsed: number,
-  maxSteps: number,
+  args: NextArgs,
   signal: AbortSignal,
   onProgress?: ProgressFn,
 ): Promise<{ result: NextResult; usage: CallUsage }> {
-  const pageSection = pageDigest ? `\n\nCURRENT PAGE (the active tab right now):\n${pageDigest}` : '';
+  const { navigatorModel } = await chatSettingsStore.getSettings();
+  const lastSection = args.lastAction
+    ? `\n\nLAST ACTION (just executed — judge its outcome from the screenshot):\n${args.lastAction.description}\nExecutor reported: ${args.lastAction.execNote || '(nothing)'}`
+    : '\n\nLAST ACTION: none — this is the first turn; judge only what the current page shows.';
+  const pageSection = args.pageDigest ? `\n\nCURRENT PAGE (the active tab right now):\n${args.pageDigest}` : '';
+  const shotSection = args.screenshotDataUrl
+    ? ''
+    : '\n\n(NOTE: the screenshot could not be captured this turn — judge from the digest and be conservative.)';
   const content =
-    `OBJECTIVE: ${objective}\n\nSTEPS USED: ${stepsUsed} of ${maxSteps}` + pageSection + journalSection(journal);
-  const { value, usage } = await callOrchestrator<NextResult>(NEXT_SYSTEM_PROMPT, content, signal, onProgress);
+    `OBJECTIVE: ${args.objective}\n\nSTEPS USED: ${args.stepsUsed} of ${args.maxSteps}` +
+    lastSection +
+    pageSection +
+    shotSection +
+    journalSection(args.journal);
+  const { value, usage } = await callOrchestrator<NextResult>(NEXT_SYSTEM_PROMPT, content, signal, onProgress, {
+    imageDataUrl: args.screenshotDataUrl,
+    modelOverride: navigatorModel || undefined,
+  });
   if (!['step', 'done', 'stop', 'clarify', 'chat'].includes(value.decision)) {
     throw new Error(`Navigator returned invalid decision: ${String(value.decision)}`);
   }
@@ -282,17 +324,28 @@ export interface CallUsage {
 /** Called when a logical call needs extra rounds, so the UI can say why it is slow */
 export type ProgressFn = (message: string) => void;
 
+/** Message content: plain text, or text + image for multimodal calls */
+type MessageContent = string | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>;
+
+interface CallOpts {
+  /** Attach a screenshot (data URL) to the user message — multimodal models only */
+  imageDataUrl?: string;
+  /** Use this model instead of the configured orchestratorModel */
+  modelOverride?: string;
+}
+
 async function callOrchestrator<T>(
   systemPrompt: string,
   userContent: string,
   signal: AbortSignal,
   onProgress?: ProgressFn,
+  opts?: CallOpts,
 ): Promise<{ value: T; usage: CallUsage }> {
   const { orchestratorBaseUrl, orchestratorApiKey, orchestratorModel } = await chatSettingsStore.getSettings();
-  const model = orchestratorModel;
+  const model = opts?.modelOverride || orchestratorModel;
 
   const request = async (
-    messages: { role: string; content: string }[],
+    messages: { role: string; content: MessageContent }[],
   ): Promise<{ content: string; usage: CallUsage }> => {
     const requestStartedAt = Date.now();
     const response = await fetchWithTimeout(
@@ -310,6 +363,11 @@ async function callOrchestrator<T>(
           messages,
           temperature: 0.2,
           usage: { include: true },
+          // Payloads can carry page digests and (for the stepwise navigator)
+          // SCREENSHOTS of the user's logged-in browser — route only to
+          // providers that neither train on nor retain prompts (OpenRouter
+          // provider preference).
+          provider: { data_collection: 'deny' },
         }),
       },
       signal,
@@ -337,9 +395,18 @@ async function callOrchestrator<T>(
     };
   };
 
-  const messages = [
+  const userMessage: { role: string; content: MessageContent } = opts?.imageDataUrl
+    ? {
+        role: 'user',
+        content: [
+          { type: 'text', text: userContent },
+          { type: 'image_url', image_url: { url: opts.imageDataUrl } },
+        ],
+      }
+    : { role: 'user', content: userContent };
+  const messages: { role: string; content: MessageContent }[] = [
     { role: 'system', content: systemPrompt },
-    { role: 'user', content: userContent },
+    userMessage,
   ];
   const first = await request(messages);
   try {

@@ -21,6 +21,13 @@ export interface ChatSettingsConfig {
   /** Strong model for rare high-stakes orchestrator calls (rescue/replan/salvage) */
   orchestratorModelStrong: string;
   /**
+   * Multimodal judge-and-decide model for the stepwise engine (sees a
+   * screenshot every step). Empty = fall back to orchestratorModel.
+   * NOTE: using this sends page screenshots to the remote provider — the
+   * orchestrator requests no-data-retention routing, but it is still remote.
+   */
+  navigatorModel: string;
+  /**
    * Escalation: when the local executor gets stuck, let a cloud model drive
    * the browser directly. Text-only — element labels and page text cross the
    * boundary; screenshots never do (grounding stays local).
@@ -53,6 +60,10 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettingsConfig = {
   // orchestrator model. User verdict 2026-07-12: Kimi is pricier and weaker
   // than GLM-5.2 — one model for all orchestration.
   orchestratorModelStrong: '',
+  // Research verdict 2026-07-15: cheapest serious open-weights multimodal
+  // agent model on OpenRouter ($0.14/$0.28 per 1M, 310B-A15B omni MoE,
+  // GUI-agent-trained). Alternates: qwen/qwen3.5-122b-a10b, z-ai/glm-4.6v.
+  navigatorModel: 'xiaomi/mimo-v2.5',
   cloudExecutorEnabled: true,
   executorModelTier1: 'z-ai/glm-5.2',
   executorModelTier2: 'z-ai/glm-5.2',

@@ -5,47 +5,55 @@ import { postExecutionEvent } from '../events';
 import { capturePageState } from '../perception';
 import { streamCloudChatReply } from './chat';
 import { nextStep, reportOutcome, curateCollection } from './orchestrator';
-import type { ProgramStep, CallUsage, StepExpect } from './orchestrator';
+import type { ProgramStep, CallUsage } from './orchestrator';
 import { createStepRunner, describeStep, listLines, itemKey } from './program';
-import { verifyVisual } from './grounder';
-import {
-  verifyExpect,
-  describeExpect,
-  hasExpectation,
-  degenerateExpectReason,
-  weakSideEffectExpectReason,
-} from './verifier';
 
 const logger = createLogger('stepwise');
 
 /**
- * STEPWISE conductor (experimental alternative to pav.ts — flip the engine
- * constant in loop.ts to switch). No upfront plan: the cloud navigator
- * decides ONE step at a time from the live page digest + the journal, the
- * runtime executes and verifies it, and the outcome (with the verifier's
- * observation) feeds the next decision. There is no separate reflector — a
- * failure's observation lands in the journal and the next decision IS the
- * reaction. Expects are observation-grounded by construction: every decision
- * sees the actual page it is acting on, so it never has to invent
- * postconditions for pages it hasn't seen.
+ * STEPWISE conductor: judge-and-decide, one multimodal cloud call per step.
  *
- * The safety invariants are inherited from PAV and live IN CODE, not prompts:
- * side-effect steps get ONE attempt and a failed one may never be re-issued;
- * state-changing steps without a real expect are rejected before execution;
- * a decision that repeats a failing action stops the run honestly; hard
- * budgets on steps, wall clock, and consecutive failures.
+ * Loop: [capture screenshot + digest] -> navigator JUDGES what the last
+ * action actually did (from pixels, not predictions) and DECIDES the next
+ * step -> runtime executes it -> settle -> repeat, until the navigator can
+ * see the objective delivered. There are no planner-authored expects and no
+ * separate verifier: verification IS the judgment at the top of every turn,
+ * made by the strongest model in the system looking at the actual outcome.
+ *
+ * Safety invariants live IN CODE, not prompts:
+ * - side-effect steps get exactly ONE attempt, and one judged failed or
+ *   uncertain can never be blindly re-issued on the same page (permanent
+ *   per-run memory);
+ * - an action judged failed twice is rejected at decision time;
+ * - hard budgets on steps, wall clock, consecutive failures, and
+ *   consecutive invalid decisions (reset by any executed step).
+ *
+ * PRIVACY NOTE: this engine sends tab screenshots to the remote navigator
+ * model. Calls request no-retention routing (provider.data_collection=deny),
+ * but this is a deliberate departure from the local-only doctrine, traded
+ * for verification robustness. The no-API-key local path is unaffected.
  */
 
 const MAX_STEPS = 30;
 const MAX_TASK_MS = 15 * 60_000;
 const JOURNAL_MAX_LINES = 80;
-// Consecutive FAILED steps before the run stops — the navigator is clearly
-// not converging and each failure costs a decision + an execution
 const MAX_CONSECUTIVE_FAILURES = 4;
-// Runtime-rejected decisions (invalid/unsafe steps) before stopping
+// Consecutive runtime-rejected decisions; any EXECUTED step resets the count
 const MAX_REJECTIONS = 3;
 const RESUME_WINDOW_MS = 30 * 60_000;
-const STATE_CHANGING = new Set(['navigate', 'click', 'type', 'type_focused', 'key']);
+
+// Give the page time to react before photographing it — a screenshot of a
+// mid-transition page produces a wrong judgment, and wrong judgments are this
+// architecture's only failure mode. (capturePageState additionally waits for
+// the tab's load state.)
+const SETTLE_MS: Record<string, number> = {
+  navigate: 2500,
+  click: 1500,
+  type: 1200,
+  type_focused: 1200,
+  key: 1500,
+  scroll: 600,
+};
 
 function fmtDuration(ms: number): string {
   const s = Math.round(ms / 1000);
@@ -79,28 +87,22 @@ function actionFingerprint(step: ProgramStep): string {
   return JSON.stringify([step.do, step.url ?? '', step.target ?? '', step.query ?? '']);
 }
 
-// Actions whose target label suggests an irreversible submit. Generic verbs,
-// not site lore — the point is to force an EXPLICIT sideEffect declaration,
-// not to decide it: an unmarked submit would silently get the 2-attempt retry
-// and could fire twice.
+// Submit-looking click/key targets must declare sideEffect explicitly — an
+// unmarked submit would get the transient-retry treatment and could fire
+// twice. Input-looking targets are excluded (a textbox merely NAMED "Post
+// text" is not a submit button — live false positive 2026-07-15).
 const SUBMITTY = /\b(post|send|submit|publish|delete|purchase|buy|pay|confirm|apply|tweet|reply)\b/i;
+const INPUTISH = /\b(text|field|box|input|editor|composer|area|message body|search|what)\b/i;
 
-// Runtime validity of ONE decided step (the stepwise counterpart of the plan
-// validator): state-changing steps need a real, non-degenerate expect, and a
-// side-effect step may not "prove" itself with text this run already typed.
-function stepFaultReason(step: ProgramStep, typedSoFar: string[]): string | null {
+function stepFaultReason(step: ProgramStep): string | null {
   if (!step.do) return 'the step has no "do"';
-  if (STATE_CHANGING.has(step.do)) {
-    if (!hasExpectation(step.expect)) return `a ${step.do} step must carry an expect (its observable postcondition)`;
-    const degenerate = degenerateExpectReason(step.expect!);
-    if (degenerate) return degenerate;
-    if (step.sideEffect) {
-      const weak = weakSideEffectExpectReason(step.expect!, typedSoFar);
-      if (weak) return weak;
-    }
-    if ((step.do === 'click' || step.do === 'key') && step.sideEffect === undefined && SUBMITTY.test(step.target ?? '')) {
-      return `this ${step.do} on "${step.target}" may trigger an irreversible submit — declare "sideEffect" explicitly: true if it posts/sends/deletes/purchases, false if it merely opens a composer, menu, or dialog`;
-    }
+  if (
+    (step.do === 'click' || step.do === 'key') &&
+    step.sideEffect === undefined &&
+    SUBMITTY.test(step.target ?? '') &&
+    !INPUTISH.test(step.target ?? '')
+  ) {
+    return `this ${step.do} on "${step.target}" may trigger an irreversible submit — declare "sideEffect" explicitly: true if it posts/sends/deletes/purchases, false if it merely opens a composer, menu, or dialog`;
   }
   return null;
 }
@@ -108,6 +110,8 @@ function stepFaultReason(step: ProgramStep, typedSoFar: string[]): string | null
 const stripBullet = (line: string) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim();
 
 const CONTINUATION = /^(continue|resume|keep going|carry on|go on|proceed|finish it|carry on with it)\b/i;
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export async function runStepwiseTask(
   port: chrome.runtime.Port,
@@ -165,27 +169,23 @@ export async function runStepwiseTask(
     );
   };
 
-  const scout = async (): Promise<string | undefined> => {
+  let currentUrlPath = '';
+
+  // One observation = digest for the prompt + screenshot for the judge's eyes
+  const observe = async (): Promise<{ digest?: string; screenshot?: string }> => {
     const state = await capturePageState(tabId, false).catch(() => null);
-    if (state) {
-      try {
-        const url = new URL(state.url);
-        currentUrlPath = url.host + url.pathname;
-      } catch {
-        currentUrlPath = state.url.slice(0, 120);
-      }
+    if (!state) return {};
+    try {
+      const url = new URL(state.url);
+      currentUrlPath = url.host + url.pathname;
+    } catch {
+      currentUrlPath = state.url.slice(0, 120);
     }
-    if (!state) return undefined;
-    // The navigator's page sense must include CONTENT, not just controls —
-    // element labels only cover interactive elements, so a decision like
-    // "check whether my post now appears" is impossible from labels alone
-    // (live failure 2026-07-15: navigated to the profile to confirm the post,
-    // could not see it, and fell back to re-posting)
     const textSample = (state.pageText ?? '').replace(/\s+/g, ' ').trim().slice(0, 800);
-    return (
+    const digest =
       `${state.title} — ${state.url}\nELEMENTS:\n${elementsDigestOf(state).join('\n')}` +
-      (textSample ? `\nPAGE TEXT (truncated sample — use an extract step to read more):\n${textSample}` : '')
-    );
+      (textSample ? `\nPAGE TEXT (truncated sample — use an extract step to read more):\n${textSample}` : '');
+    return { digest, screenshot: state.screenshot || undefined };
   };
 
   let goalText = task;
@@ -315,26 +315,27 @@ export async function runStepwiseTask(
     signal,
   );
 
-  // In-code memory for the safety guards. PERMANENT for the run — an
-  // intervening successful step must never launder a failed action back into
-  // eligibility (live bug 2026-07-15: click "Post" failed verification, an
-  // unrelated click passed and wiped the memory, and the navigator re-issued
-  // the possibly-landed post).
-  const typedSoFar: string[] = [];
+  // Guard memory — PERMANENT for the run (an intervening success must never
+  // launder a failed action back into eligibility)
   const failedCounts = new Map<string, number>();
-  // Side-effect failures are remembered WITH the page they happened on:
-  // re-issuing the same action on the same surface is blocked outright, while
-  // a genuinely different surface (e.g. a dedicated compose dialog after an
-  // inline-composer attempt) stays possible.
   const failedSideEffectContexts = new Set<string>();
-  let currentUrlPath = '';
   let consecutiveFailures = 0;
   let decidedAny = false;
   let outcome: 'ok' | 'fail' | null = null;
   let outcomeSummary = '';
 
+  // The step awaiting judgment at the top of the next turn
+  let lastAction: {
+    stepNo: number;
+    description: string;
+    execNote: string;
+    fingerprint: string;
+    sideEffect: boolean;
+    urlPath: string;
+  } | null = null;
+
   try {
-    heartbeat('Reading the page and deciding the first step…');
+    heartbeat('Looking at the page and deciding the first step…');
     while (stepsUsed < MAX_STEPS) {
       if (signal.aborted) throw new DOMException('aborted', 'AbortError');
       if (outOfTime()) {
@@ -344,11 +345,25 @@ export async function runStepwiseTask(
         return;
       }
 
-      // ---- DECIDE ----
-      const pageDigest = await scout();
+      // ---- OBSERVE + JUDGE + DECIDE (one multimodal call) ----
+      const observed = await observe();
       let call;
       try {
-        call = await nextStep(goalText, journal, pageDigest, stepsUsed, MAX_STEPS, signal, heartbeat);
+        call = await nextStep(
+          {
+            objective: goalText,
+            journal,
+            pageDigest: observed.digest,
+            lastAction: lastAction
+              ? { description: lastAction.description, execNote: lastAction.execNote }
+              : null,
+            stepsUsed,
+            maxSteps: MAX_STEPS,
+            screenshotDataUrl: observed.screenshot,
+          },
+          signal,
+          heartbeat,
+        );
       } catch (error) {
         if (signal.aborted) throw error;
         const message = error instanceof Error ? error.message : String(error);
@@ -360,8 +375,46 @@ export async function runStepwiseTask(
       }
       const decideMeta = track(call.usage);
       const decision = call.result;
-      logger.info('decision:', JSON.stringify(decision).slice(0, 400));
+      logger.info('decision:', JSON.stringify(decision).slice(0, 500));
 
+      // ---- BOOK THE JUDGMENT of the previous step ----
+      const assessment = (decision.assessment ?? '').slice(0, 220);
+      if (lastAction) {
+        const verdict = decision.last_action ?? 'uncertain';
+        const mark = verdict === 'succeeded' ? '✓' : verdict === 'failed' ? '✗' : '⚠';
+        postExecutionEvent(
+          port,
+          Actors.SYSTEM,
+          'step.ok',
+          taskId,
+          `Step ${lastAction.stepNo} ${mark} — ${assessment || verdict}`,
+          '👁 judged',
+        );
+        note(`judge on step ${lastAction.stepNo} (${lastAction.description.slice(0, 80)}): ${verdict} — ${assessment}`);
+        if (verdict === 'failed') {
+          consecutiveFailures++;
+          failedCounts.set(lastAction.fingerprint, (failedCounts.get(lastAction.fingerprint) ?? 0) + 1);
+        } else if (verdict === 'succeeded') {
+          consecutiveFailures = 0;
+        }
+        // Failed OR uncertain side effects may have landed — same-page
+        // re-issue is off the table for the rest of the run
+        if (lastAction.sideEffect && verdict !== 'succeeded') {
+          failedSideEffectContexts.add(`${lastAction.fingerprint}@${lastAction.urlPath}`);
+        }
+        lastAction = null;
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          await report('partial', `${MAX_CONSECUTIVE_FAILURES} consecutive steps failed — not converging.`);
+          outcome = 'fail';
+          outcomeSummary = 'consecutive failures';
+          return;
+        }
+        await persist('running');
+      } else if (assessment) {
+        note(`observed: ${assessment}`);
+      }
+
+      // ---- ACT ON THE DECISION ----
       if (decision.decision === 'chat' && !decidedAny) {
         record.mode = 'chat';
         try {
@@ -402,37 +455,12 @@ export async function runStepwiseTask(
       }
 
       if (decision.decision === 'done') {
-        // ---- VERIFY OBJECTIVE ----
-        const checks = (decision.objective ?? []).filter(hasExpectation).slice(0, 3);
-        let objectiveMet = true;
-        for (const expect of checks) {
-          const verdict = await verifyExpect(tabId, expect, signal);
-          postExecutionEvent(
-            port,
-            Actors.SYSTEM,
-            'step.ok',
-            taskId,
-            `Objective check ${verdict.pass ? '✓' : '✗'} ${describeExpect(expect)}${verdict.pass ? '' : ` — ${verdict.observation.slice(0, 140)}`}`,
-            '⚙ verified · $0',
-          );
-          if (!verdict.pass) {
-            objectiveMet = false;
-            note(
-              `navigator said done, but the objective check FAILED: ${describeExpect(expect)} — ${verdict.observation.slice(0, 160)}. The objective is NOT delivered yet.`,
-            );
-            break;
-          }
-        }
-        if (objectiveMet) {
-          note(checks.length ? 'all objective checks passed' : 'navigator declared done (no objective checks given)');
-          await report('achieved', '');
-          outcome = 'ok';
-          outcomeSummary = 'objective met';
-          return;
-        }
-        // Failed done-claim costs a decision slot so it cannot loop free
-        stepsUsed++;
-        continue;
+        note(`navigator declared done: ${assessment || '(no evidence stated)'}`);
+        postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `Objective judged complete — ${assessment}`, decideMeta);
+        await report('achieved', '');
+        outcome = 'ok';
+        outcomeSummary = 'objective met';
+        return;
       }
 
       // ---- decision === 'step' ----
@@ -450,13 +478,10 @@ export async function runStepwiseTask(
       }
       decidedAny = true;
 
-      // Runtime validity + safety gates (in code, not prompts)
-      const fault = stepFaultReason(step, typedSoFar);
+      const fault = stepFaultReason(step);
       if (fault) {
         rejections++;
-        note(
-          `step rejected by the runtime: ${fault}. Decide a corrected step — state-changing steps need a REAL expect that only success satisfies.`,
-        );
+        note(`step rejected by the runtime: ${fault}`);
         postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `Refining the step (${fault.slice(0, 160)})`, decideMeta);
         if (rejections >= MAX_REJECTIONS) {
           await report('partial', `The navigator could not produce a valid step: ${fault}`);
@@ -471,25 +496,20 @@ export async function runStepwiseTask(
       if (step.sideEffect && failedSideEffectContexts.has(`${fingerprint}@${currentUrlPath}`)) {
         rejections++;
         note(
-          'step rejected: that side-effect action already failed VERIFICATION on this same page and may have taken effect — verify its outcome (navigate to where the result would be visible and check) instead of re-issuing it.',
+          'step rejected: that side-effect action already ran on this page with an unconfirmed outcome — LOOK for its result (navigate to where it would be visible, extract) instead of re-issuing it.',
         );
         if (rejections >= MAX_REJECTIONS) {
-          await report('partial', 'A side-effect step failed verification and must not be blindly repeated.');
+          await report('partial', 'A side-effect step with an unconfirmed outcome must not be blindly repeated.');
           outcome = 'fail';
           outcomeSummary = 'side-effect repeat blocked';
           return;
         }
         continue;
       }
-      const priorFailures = failedCounts.get(fingerprint) ?? 0;
-      if (priorFailures >= 2) {
-        // Reject the DECISION, not the run — the navigator may have been doing
-        // good work in between (live case: it was verifying a possibly-landed
-        // post when this guard killed the whole run). MAX_REJECTIONS is the
-        // loop backstop.
+      if ((failedCounts.get(fingerprint) ?? 0) >= 2) {
         rejections++;
         note(
-          'step rejected: that exact action has already failed twice this run — take a DIFFERENT approach (another control, route, or surface), or confirm the outcome with an extract step instead.',
+          'step rejected: that exact action has already failed twice this run — take a DIFFERENT approach (another control, route, or surface).',
         );
         if (rejections >= MAX_REJECTIONS) {
           await report('partial', 'The navigator kept deciding the same failing step.');
@@ -499,138 +519,68 @@ export async function runStepwiseTask(
         }
         continue;
       }
-      if (priorFailures === 1) {
-        note(
-          'warning: this exact action already failed once this run — a second failure blocks it; prefer a different approach.',
-        );
-      }
 
+      // Decision accepted — an executed step resets the invalid-decision streak
+      rejections = 0;
       stepsUsed++;
-      const stepLabel = `Step ${stepsUsed}: ${describeStep(step)}${step.sideEffect ? ' [side-effect]' : ''}`;
+      const description = `${describeStep(step)}${step.sideEffect ? ' [side-effect]' : ''}`;
       postExecutionEvent(
         port,
         Actors.SYSTEM,
         'step.ok',
         taskId,
-        `${stepLabel}${decision.why ? ` — ${decision.why.slice(0, 120)}` : ''}`,
+        `Step ${stepsUsed}: ${description}${decision.why ? ` — ${decision.why.slice(0, 120)}` : ''}`,
         decideMeta,
       );
 
       if (step.textFrom === 'collected') await curateBeforeWrite();
-      if ((step.do === 'type' || step.do === 'type_focused') && step.text && step.textFrom !== 'collected') {
-        typedSoFar.push(step.text);
-      }
 
-      // ---- ACT + VERIFY (same invariants as PAV) ----
+      // ---- EXECUTE ----
+      // Executor-level retry only for steps that DIDN'T run (grounding miss,
+      // stale element): exec.ok=false means the action never happened, so a
+      // retry is safe. Side-effect steps still get exactly one attempt.
       const attempts = step.sideEffect ? 1 : 2;
-      let observation = '';
-      let passed = false;
-      let inconclusive = false;
-      for (let attempt = 1; attempt <= attempts; attempt++) {
-        const exec = await runner.execStep(step);
-        if (!exec.ok) {
-          observation = exec.message;
-        } else if (hasExpectation(step.expect)) {
-          let verdict = await verifyExpect(tabId, step.expect!, signal);
-          // Perception failure is not proof of step failure: re-VERIFY (never
-          // re-execute) before deciding
-          for (let v = 0; v < 2 && verdict.inconclusive; v++) {
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            verdict = await verifyExpect(tabId, step.expect!, signal);
-          }
-          passed = verdict.pass;
-          inconclusive = Boolean(verdict.inconclusive);
-          observation = verdict.observation;
-        } else {
-          passed = true;
-          observation = exec.message;
-        }
-        if (passed || inconclusive) break;
-        if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, 1200));
+      let exec = await runner.execStep(step);
+      for (let attempt = 2; !exec.ok && attempt <= attempts; attempt++) {
+        await sleep(1200);
+        exec = await runner.execStep(step);
       }
 
-      // SIDE-EFFECT CROSS-EXAMINATION: for irreversible actions the risk is
-      // asymmetric — a false FAIL invites a duplicate side effect, which is
-      // strictly worse than a false pass. Before recording a side-effect
-      // verification failure, get a second opinion from vision: the
-      // deterministic expect may simply be wrong for this surface (live case
-      // 2026-07-15: the post landed, but the expect assumed the INLINE
-      // composer would be "gone" — inline composers clear, they never close).
-      let visionConfirmed = false;
-      if (!passed && !inconclusive && step.sideEffect) {
-        const question = `The browser just performed this action: ${describeStep(step)}${decision.why ? ` (purpose: ${decision.why.slice(0, 100)})` : ''}. Looking at the page as it is now, did that action succeed?`;
-        const answer = await verifyVisual(tabId, question, signal).catch(error => {
-          logger.warning('side-effect vision cross-exam failed:', error);
-          return '';
-        });
-        logger.info('side-effect vision cross-exam:', question.slice(0, 120), '→', answer.slice(0, 160));
-        if (/^\s*yes\b/i.test(answer.trim())) {
-          passed = true;
-          visionConfirmed = true;
-          observation = `the deterministic check failed (${observation.slice(0, 100)}) but vision confirms the action succeeded: ${answer.slice(0, 120)}`;
-        } else if (answer) {
-          // Record the second opinion either way — a transcript must show
-          // whether the cross-exam ran and what it saw
-          observation = `${observation} (vision cross-check also judged it unsuccessful: ${answer.slice(0, 100)})`;
-        }
-      }
-
-      if (!passed && inconclusive) {
+      if (!exec.ok) {
         postExecutionEvent(
           port,
           Actors.SYSTEM,
           'step.ok',
           taskId,
-          `${stepLabel} ⚠ could not verify (perception) — proceeding`,
-          '⚙ unverified',
+          `Step ${stepsUsed}: ${description} ✗ — ${exec.message.slice(0, 160)}`,
+          '⚙ executor failed',
         );
-        note(
-          `step ${stepsUsed} could NOT be verified (perception failed, not a step failure) — proceeding: ${describeStep(step)}`,
-        );
-        consecutiveFailures = 0;
+        note(`step ${stepsUsed} could not execute: ${describeStep(step)} — ${exec.message.slice(0, 180)}`);
+        consecutiveFailures++;
+        failedCounts.set(fingerprint, (failedCounts.get(fingerprint) ?? 0) + 1);
+        // The action never ran, so there is nothing for the judge to assess
+        lastAction = null;
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          await report('partial', `${MAX_CONSECUTIVE_FAILURES} consecutive steps failed — not converging.`);
+          outcome = 'fail';
+          outcomeSummary = 'consecutive failures';
+          return;
+        }
         await persist('running');
         continue;
       }
 
-      if (passed) {
-        postExecutionEvent(
-          port,
-          Actors.SYSTEM,
-          'step.ok',
-          taskId,
-          `${stepLabel} ✓${visionConfirmed ? ' (vision confirmed the outcome; the deterministic check was wrong for this surface)' : hasExpectation(step.expect) ? ` (${describeExpect(step.expect!)})` : ''}`,
-          visionConfirmed ? '⚙ vision-verified' : '⚙ verified · $0',
-        );
-        note(
-          `step ${stepsUsed} ok: ${describeStep(step)}${observation && observation !== 'expect met' ? ` — ${observation.slice(0, 120)}` : ''}`,
-        );
-        consecutiveFailures = 0;
-        await persist('running');
-        continue;
-      }
-
-      // ---- FAILED — the observation goes to the journal; the next decision
-      // is the reaction (no separate reflector in this engine) ----
-      postExecutionEvent(
-        port,
-        Actors.SYSTEM,
-        'step.ok',
-        taskId,
-        `${stepLabel} ✗ — ${observation.slice(0, 160)}`,
-        '⚙ verify failed',
-      );
-      note(`step ${stepsUsed} FAILED: ${describeStep(step)} — ${observation.slice(0, 180)}`);
-      consecutiveFailures++;
-      failedCounts.set(fingerprint, (failedCounts.get(fingerprint) ?? 0) + 1);
-      if (step.sideEffect) failedSideEffectContexts.add(`${fingerprint}@${currentUrlPath}`);
+      // Executed — give the page time to react before the next observation
+      await sleep(SETTLE_MS[step.do] ?? 400);
+      lastAction = {
+        stepNo: stepsUsed,
+        description,
+        execNote: exec.message,
+        fingerprint,
+        sideEffect: Boolean(step.sideEffect),
+        urlPath: currentUrlPath,
+      };
       await persist('running');
-
-      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-        await report('partial', `${MAX_CONSECUTIVE_FAILURES} consecutive steps failed — not converging.`);
-        outcome = 'fail';
-        outcomeSummary = 'consecutive failures';
-        return;
-      }
     }
 
     await report('partial', `Step budget (${MAX_STEPS}) exhausted without meeting the objective.`);
