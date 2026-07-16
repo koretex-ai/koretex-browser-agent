@@ -40,6 +40,7 @@ const fromDraft = (draft: SkillDraft): Omit<CustomSkillRecord, 'createdAt' | 'up
 
 export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
   const [drafts, setDrafts] = useState<SkillDraft[]>([]);
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -147,61 +148,82 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
         {BUILT_IN_NAMES.join(', ')}. A skill you create with the same name replaces the built-in one.
       </p>
 
-      <div className="space-y-4">
+      <div className="space-y-2">
         {drafts.map((draft, index) => (
           <div
             key={index}
-            className={`rounded-lg border p-3 ${isDarkMode ? 'border-[#1F7A4A]/40 bg-[#0C1911]' : 'border-gray-200 bg-gray-50'}`}>
-            <div className="mb-2 flex items-start gap-2">
-              <div className="grow">
-                <label className={labelClass}>Name</label>
-                <input
-                  type="text"
-                  value={draft.name}
-                  onChange={e => updateDraft(index, { name: e.target.value })}
-                  placeholder="e.g. notion"
-                  className={inputClass}
-                />
+            className={`rounded-lg border ${isDarkMode ? 'border-[#1F7A4A]/40 bg-[#0C1911]' : 'border-gray-200 bg-gray-50'}`}>
+            <button
+              type="button"
+              onClick={() => setExpandedIndex(expandedIndex === index ? null : index)}
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left">
+              <span className={`truncate text-sm font-medium ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                {draft.name || '(unnamed skill)'}
+              </span>
+              <span className={`flex shrink-0 items-center gap-2 text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                {draft.hosts && <span className="max-w-[220px] truncate">{draft.hosts}</span>}
+                <span>{expandedIndex === index ? '▾' : '▸'}</span>
+              </span>
+            </button>
+            {expandedIndex === index && (
+              <div className={`border-t p-3 ${isDarkMode ? 'border-[#1F7A4A]/30' : 'border-gray-200'}`}>
+                <div className="mb-2">
+                  <label className={labelClass}>Name</label>
+                  <input
+                    type="text"
+                    value={draft.name}
+                    onChange={e => updateDraft(index, { name: e.target.value })}
+                    placeholder="e.g. notion"
+                    className={inputClass}
+                  />
+                </div>
+                <div className="mb-2">
+                  <label className={labelClass}>Sites (comma-separated URL fragments that switch it on)</label>
+                  <input
+                    type="text"
+                    value={draft.hosts}
+                    onChange={e => updateDraft(index, { hosts: e.target.value })}
+                    placeholder="e.g. notion.so, notion.site"
+                    className={inputClass}
+                  />
+                </div>
+                <div className="mb-2">
+                  <label className={labelClass}>
+                    Task match (optional pattern tested against your request — activates the skill before the site is
+                    open)
+                  </label>
+                  <input
+                    type="text"
+                    value={draft.intent}
+                    onChange={e => updateDraft(index, { intent: e.target.value })}
+                    placeholder="e.g. notion|wiki page"
+                    className={inputClass}
+                  />
+                </div>
+                <div className="mb-2">
+                  <label className={labelClass}>
+                    Playbook (what the agent should know — routes, steps, traps; the FIRST line should state the
+                    skill&apos;s purpose)
+                  </label>
+                  <textarea
+                    value={draft.guidance}
+                    onChange={e => updateDraft(index, { guidance: e.target.value })}
+                    rows={5}
+                    placeholder={'Find X on site.com — use when the user asks for X.\nStart at https://...\nNever click ... — use ... instead.'}
+                    className={inputClass}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDrafts(prev => prev.filter((_, i) => i !== index));
+                    setExpandedIndex(null);
+                  }}
+                  className={smallButtonClass}>
+                  Delete skill
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setDrafts(prev => prev.filter((_, i) => i !== index))}
-                className={`mt-5 shrink-0 ${smallButtonClass}`}>
-                Delete
-              </button>
-            </div>
-            <div className="mb-2">
-              <label className={labelClass}>Sites (comma-separated URL fragments that switch it on)</label>
-              <input
-                type="text"
-                value={draft.hosts}
-                onChange={e => updateDraft(index, { hosts: e.target.value })}
-                placeholder="e.g. notion.so, notion.site"
-                className={inputClass}
-              />
-            </div>
-            <div className="mb-2">
-              <label className={labelClass}>
-                Task match (optional pattern tested against your request — activates the skill before the site is open)
-              </label>
-              <input
-                type="text"
-                value={draft.intent}
-                onChange={e => updateDraft(index, { intent: e.target.value })}
-                placeholder="e.g. notion|wiki page"
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <label className={labelClass}>Playbook (what the agent should know — routes, steps, traps)</label>
-              <textarea
-                value={draft.guidance}
-                onChange={e => updateDraft(index, { guidance: e.target.value })}
-                rows={4}
-                placeholder={'Create a page via ...\nNever click ... — use ... instead.'}
-                className={inputClass}
-              />
-            </div>
+            )}
           </div>
         ))}
       </div>
@@ -209,7 +231,10 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={() => setDrafts(prev => [...prev, { name: '', hosts: '', intent: '', guidance: '' }])}
+          onClick={() => {
+            setDrafts(prev => [...prev, { name: '', hosts: '', intent: '', guidance: '' }]);
+            setExpandedIndex(drafts.length);
+          }}
           className={smallButtonClass}>
           + Add skill
         </button>
