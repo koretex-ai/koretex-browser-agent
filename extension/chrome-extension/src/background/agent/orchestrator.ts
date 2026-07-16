@@ -848,7 +848,7 @@ Write the playbook the way an expert would brief a colleague:
 
 Also derive:
 - "name": short kebab-case, named for the operation (e.g. "notion-new-page").
-- "hosts": URL substrings (host + optional path prefix) of the sites ACTED ON in the demo — these trigger the skill when a tab matches.
+- "hosts": URL substrings (host + optional path prefix) of the sites ACTED ON in the demo — these trigger the skill when a tab matches. On multi-app domains include the path that identifies the app: "docs.google.com/document", never bare "docs.google.com" (which would also match Sheets and Slides and pin the skill on the wrong app).
 - "intent": a case-insensitive regex source matching how a user would PHRASE tasks this skill serves. GENEROUS and order-free: single distinctive topic words as alternatives ("solana|birdeye|token" style), never multi-word ordered phrases like "top.*token.*solana" — users phrase tasks unpredictably and a missed match means the skill silently never fires.
 - "questions": up to 3 SHORT questions. On the FIRST round (no INTERVIEW ANSWERS yet), the first question must always confirm the skill's key objective in the user's own words ("What should this skill accomplish — when should the agent use it?") unless the notes already state it explicitly. Further questions only where the demonstration is genuinely ambiguous about generality ("Is this URL always the starting point?", "Should this apply to all X or only Y?"). If INTERVIEW ANSWERS are present, fold them in and return few or no new questions.
 
