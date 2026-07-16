@@ -201,6 +201,21 @@ const onTabUpdated = (tabId: number, changeInfo: chrome.tabs.TabChangeInfo, tab:
     .catch(error => logger.warning('recorder re-inject failed:', error));
 };
 
+// The demonstration follows the USER, not a tab: opening a result in a new
+// tab or switching tabs mid-demo re-binds the recording to the active tab
+// (a tab-bound recording silently captured nothing after a tab switch)
+const onTabActivated = async (activeInfo: chrome.tabs.TabActiveInfo) => {
+  if (!session || session.status !== 'recording' || activeInfo.tabId === session.tabId) return;
+  session.tabId = activeInfo.tabId;
+  const tab = await chrome.tabs.get(activeInfo.tabId).catch(() => null);
+  if (tab?.url && /^https?:/i.test(tab.url)) {
+    session.events.push(`switched tab → ${tab.url}`);
+    await chrome.scripting
+      .executeScript({ target: { tabId: activeInfo.tabId }, func: installPageRecorder })
+      .catch(error => logger.warning('recorder inject on tab switch failed:', error));
+  }
+};
+
 // ---- side-panel message handling ----
 
 type Post = (message: unknown) => void;
@@ -240,16 +255,6 @@ export async function handleTeachMessage(
         return post({ type: 'teach_error', error: 'No tab to record — open the site first.', teachPhase: phase() });
       if (session)
         return post({ type: 'teach_error', error: 'A teaching session is already in progress.', teachPhase: phase() });
-      try {
-        await chrome.scripting.executeScript({ target: { tabId: message.tabId }, func: installPageRecorder });
-      } catch (error) {
-        const text = error instanceof Error ? error.message : String(error);
-        return post({
-          type: 'teach_error',
-          error: `Cannot record this page (${text}). Open a normal website first.`,
-          teachPhase: 'idle',
-        });
-      }
       session = {
         tabId: message.tabId,
         status: 'recording',
@@ -259,12 +264,24 @@ export async function handleTeachMessage(
         draft: null,
         startedAt: Date.now(),
       };
+      // On a real page: attach now. On a chrome://newtab or similar: start
+      // anyway — the navigation/tab-switch listeners attach the recorder the
+      // moment the user reaches an actual website.
       const tab = await chrome.tabs.get(message.tabId).catch(() => null);
-      if (tab?.url) session.events.push(`navigate → ${tab.url} (starting page)`);
+      const onRealPage = Boolean(tab?.url && /^https?:/i.test(tab.url));
+      if (onRealPage) {
+        session.events.push(`navigate → ${tab!.url} (starting page)`);
+        await chrome.scripting
+          .executeScript({ target: { tabId: message.tabId }, func: installPageRecorder })
+          .catch(error => logger.warning('recorder inject at start failed:', error));
+      }
       chrome.tabs.onUpdated.addListener(onTabUpdated);
+      chrome.tabs.onActivated.addListener(onTabActivated);
       post({
         type: 'teach_update',
-        text: '⏺ Recording. Perform the task by hand in the page — I am watching what you do (passwords are always masked). Type notes here anytime ("this filter is paywalled — skip it"), and press Finish when done.',
+        text: onRealPage
+          ? '⏺ Recording. Perform the task by hand in the page — I am watching what you do (passwords are always masked). Type notes here anytime ("this filter is paywalled — skip it"), and press Finish when done.'
+          : '⏺ Recording. Navigate to the website you want to demonstrate on — I start watching the moment you get there (passwords are always masked). Type notes here anytime, and press Finish when done.',
         teachPhase: 'recording',
       });
       return;
@@ -284,6 +301,7 @@ export async function handleTeachMessage(
       if (!session)
         return post({ type: 'teach_error', error: 'No teaching session in progress.', teachPhase: 'idle' });
       chrome.tabs.onUpdated.removeListener(onTabUpdated);
+      chrome.tabs.onActivated.removeListener(onTabActivated);
       await chrome.scripting
         .executeScript({ target: { tabId: session.tabId }, func: disablePageRecorder })
         .catch(() => {});
@@ -371,6 +389,7 @@ export async function handleTeachMessage(
     case 'teach_discard': {
       if (session) {
         chrome.tabs.onUpdated.removeListener(onTabUpdated);
+        chrome.tabs.onActivated.removeListener(onTabActivated);
         await chrome.scripting
           .executeScript({ target: { tabId: session.tabId }, func: disablePageRecorder })
           .catch(() => {});
