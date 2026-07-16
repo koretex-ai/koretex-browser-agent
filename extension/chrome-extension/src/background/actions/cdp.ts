@@ -142,13 +142,34 @@ const NAMED_KEYS: Record<string, KeySpec> = {
   end: { key: 'End', code: 'End', keyCode: 35 },
 };
 
+// US-layout virtual keycodes for printable punctuation. NEVER derive a
+// keycode from the character's char code: the ASCII codes of punctuation
+// collide with NAVIGATION keycodes — "&" is 38 (ArrowUp) and "'" is 39
+// (ArrowRight), so Sheets committed cells mid-word and walked the selection
+// around the grid ("Founder & Managing Director" overwrote the row above;
+// "D'Souza" split across two columns — live run 2026-07-16).
+const PUNCTUATION_KEYCODES: Record<string, number> = {
+  '!': 49, '@': 50, '#': 51, '$': 52, '%': 53, '^': 54, '&': 55, '*': 56, '(': 57, ')': 48,
+  '-': 189, _: 189, '=': 187, '+': 187, '[': 219, '{': 219, ']': 221, '}': 221, '\\': 220, '|': 220,
+  ';': 186, ':': 186, "'": 222, '"': 222, ',': 188, '<': 188, '.': 190, '>': 190, '/': 191, '?': 191,
+  '`': 192, '~': 192,
+};
+
 function keySpecFor(rawKey: string): KeySpec {
   const named = NAMED_KEYS[rawKey.toLowerCase()];
   if (named) return named;
   if (rawKey.length === 1) {
-    const upper = rawKey.toUpperCase();
-    const code = /[a-z]/i.test(rawKey) ? `Key${upper}` : /[0-9]/.test(rawKey) ? `Digit${rawKey}` : '';
-    return { key: rawKey, code, keyCode: upper.charCodeAt(0), text: rawKey };
+    if (/[a-z]/i.test(rawKey)) {
+      const upper = rawKey.toUpperCase();
+      return { key: rawKey, code: `Key${upper}`, keyCode: upper.charCodeAt(0), text: rawKey };
+    }
+    if (/[0-9]/.test(rawKey)) {
+      return { key: rawKey, code: `Digit${rawKey}`, keyCode: rawKey.charCodeAt(0), text: rawKey };
+    }
+    // Punctuation and other printables: mapped keycode or none at all —
+    // insertion is driven by the `text` field either way, and keyCode 0 can
+    // never be mistaken for a navigation key
+    return { key: rawKey, code: '', keyCode: PUNCTUATION_KEYCODES[rawKey] ?? 0, text: rawKey };
   }
   // Pass through unknown named keys ("F5" etc.) and let Chrome interpret
   return { key: rawKey, code: rawKey, keyCode: 0 };

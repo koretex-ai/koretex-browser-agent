@@ -44,6 +44,7 @@ export const SKILLS: Skill[] = [
       'Never press select-all in the grid — it selects every CELL (the Name Box left of the formula bar shows "1:1000") and typing lands nowhere; press Escape if that happens. To clear cells, select them and press Delete.',
       'The grid is invisible to text extraction — verify what was written from the screenshot. Rename the file via the "Untitled spreadsheet" title box at the top, then press Enter to COMMIT the rename — the title box keeps keyboard focus until then, and grid typing would land in the title instead.',
       'Data destined for a sheet must be collected as one ROW per item — each item one line with tab-separated fields ("Name<TAB>Title<TAB>Location"). Fields collected as separate items stack vertically in column A when written.',
+      'FIXING WRONG DATA: never nudge it cell by cell. Escape only cancels an in-progress edit — it NEVER deletes committed data. Clear first: select the used range (click the top-left cell, Shift+click the bottom-right used cell) and press Delete, CONFIRM the grid is empty on the screenshot, then re-type everything in ONE type_focused step.',
     ].join('\n'),
   },
   {
@@ -72,7 +73,8 @@ export const SKILLS: Skill[] = [
     hosts: ['linkedin.com'],
     intent: /linkedin/i,
     guidance: [
-      'Find people with a pre-constructed search URL instead of the search bar and filter UI: https://www.linkedin.com/search/results/people/?keywords=<role keywords>&network=%5B%22S%22%5D (network S = 2nd-degree; add geoUrn for location). The URL route bypasses both the flaky search-bar clicks and the gated filters.',
+      'Find people with a pre-constructed search URL instead of the search bar and filter UI: https://www.linkedin.com/search/results/people/?keywords=<role keywords>&network=%5B%22S%22%5D (network S = 2nd-degree). The URL route bypasses both the flaky search-bar clicks and the gated filters.',
+      'geoUrn IDs are opaque numbers — NEVER invent one (invented IDs resolve to random towns and return no results). Omit geoUrn and put the city name in the keywords instead, then check the location chip on the results page; only reuse a geoUrn you have actually seen in a URL.',
       'Several search filters (Seniority among them) are Sales-Navigator-gated: the toggle visibly reverts on apply and an upsell appears. Never fight a reverting control — encode the constraint as keywords in the URL instead.',
       'Search for concrete job titles ("Head of Data", "VP Engineering"), never class phrases like "decision maker" — literal class phrases match headline self-labelers, not the people meant.',
     ].join('\n'),
