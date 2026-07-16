@@ -21,6 +21,8 @@
  * rediscovering it).
  */
 
+import type { CustomSkillRecord } from '@extension/storage';
+
 export interface Skill {
   name: string;
   /** Substrings matched against the current tab's host+path */
@@ -77,19 +79,53 @@ export const SKILLS: Skill[] = [
 ];
 
 /**
+ * Compile user-defined skills (serializable records from skillStore) into
+ * runtime skills. Records missing a name or guidance are skipped; an invalid
+ * intent regex degrades the skill to host-only triggering rather than
+ * breaking the run.
+ */
+export function compileCustomSkills(records: CustomSkillRecord[]): Skill[] {
+  const compiled: Skill[] = [];
+  for (const record of records) {
+    const name = (record.name ?? '').trim();
+    const guidance = (record.guidance ?? '').trim();
+    if (!name || !guidance) continue;
+    let intent: RegExp | undefined;
+    const intentSource = (record.intent ?? '').trim();
+    if (intentSource) {
+      try {
+        intent = new RegExp(intentSource, 'i');
+      } catch {
+        intent = undefined;
+      }
+    }
+    compiled.push({ name, hosts: (record.hosts ?? []).map(host => host.trim()).filter(Boolean), intent, guidance });
+  }
+  return compiled;
+}
+
+/**
+ * Built-in playbooks plus the user's custom ones. A custom skill sharing a
+ * built-in's name REPLACES it — users can correct our lore, not just extend.
+ */
+export function allSkills(custom: CustomSkillRecord[]): Skill[] {
+  const compiled = compileCustomSkills(custom);
+  const overridden = new Set(compiled.map(skill => skill.name));
+  return [...SKILLS.filter(skill => !overridden.has(skill.name)), ...compiled];
+}
+
+/**
  * The playbooks applicable to this turn, matched against the live tab's
  * host+path and the objective text.
  */
-export function applicableSkills(objective: string, urlPath: string): Skill[] {
-  return SKILLS.filter(
+export function applicableSkills(objective: string, urlPath: string, skills: Skill[] = SKILLS): Skill[] {
+  return skills.filter(
     skill =>
       skill.hosts.some(host => urlPath.includes(host)) || (skill.intent ? skill.intent.test(objective) : false),
   );
 }
 
-/** Render the applicable playbooks as prompt text — empty string when none. */
-export function skillsFor(objective: string, urlPath: string): string {
-  return applicableSkills(objective, urlPath)
-    .map(skill => `● ${skill.name}\n${skill.guidance}`)
-    .join('\n\n');
+/** Render playbooks as prompt text — empty string when none. */
+export function renderSkills(skills: Skill[]): string {
+  return skills.map(skill => `● ${skill.name}\n${skill.guidance}`).join('\n\n');
 }

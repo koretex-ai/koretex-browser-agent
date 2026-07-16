@@ -1,11 +1,11 @@
 import type { PerceptionSnapshot, TaskRecord, RunStatus } from '@extension/storage';
-import { Actors, trajectoryStore, runStateStore } from '@extension/storage';
+import { Actors, trajectoryStore, runStateStore, skillStore } from '@extension/storage';
 import { createLogger } from '../log';
 import { postExecutionEvent } from '../events';
 import { capturePageState } from '../perception';
 import { streamCloudChatReply } from './chat';
 import { nextStep, strategicReview, reportOutcome, curateCollection } from './orchestrator';
-import { applicableSkills, skillsFor } from './skills';
+import { allSkills, applicableSkills, renderSkills } from './skills';
 import type { ProgramStep, CallUsage } from './orchestrator';
 import { createStepRunner, describeStep, listLines, itemKey } from './program';
 
@@ -363,6 +363,9 @@ export async function runStepwiseTask(
   let activeStrategy = '';
   let lastStrategyText = '';
   let reviewsUsed = 0;
+  // Built-in + user-defined playbooks, loaded once per run; a custom skill
+  // sharing a built-in's name replaces it
+  const skillSet = allSkills(await skillStore.getAll().catch(() => []));
   // Which playbooks the navigator is currently reading — announced on change
   let lastSkillsKey = '';
   const runReview = async (
@@ -380,7 +383,7 @@ export async function runStepwiseTask(
           pageDigest: observed.digest,
           screenshotDataUrl: observed.screenshot,
           activeStrategy: activeStrategy || undefined,
-          skills: skillsFor(goalText, currentUrlPath) || undefined,
+          skills: renderSkills(applicableSkills(goalText, currentUrlPath, skillSet)) || undefined,
           stuckSignal,
           timeRemainingMin: Math.max(0, Math.round((deadline - Date.now()) / 60_000)),
         },
@@ -483,7 +486,7 @@ export async function runStepwiseTask(
       // Surface playbook activation in the trace + journal whenever the set
       // changes — the trigger is deterministic (host/path substring or
       // objective match, in code), so the trace can state it as fact
-      const activeSkills = applicableSkills(goalText, currentUrlPath);
+      const activeSkills = applicableSkills(goalText, currentUrlPath, skillSet);
       const skillsKey = activeSkills.map(skill => skill.name).join(', ');
       if (skillsKey !== lastSkillsKey) {
         lastSkillsKey = skillsKey;
@@ -507,7 +510,7 @@ export async function runStepwiseTask(
             maxSteps: MAX_STEPS,
             timeRemainingMin: Math.max(0, Math.round((deadline - Date.now()) / 60_000)),
             activeStrategy: activeStrategy || undefined,
-            skills: skillsFor(goalText, currentUrlPath) || undefined,
+            skills: renderSkills(activeSkills) || undefined,
             screenshotDataUrl: observed.screenshot,
           },
           signal,

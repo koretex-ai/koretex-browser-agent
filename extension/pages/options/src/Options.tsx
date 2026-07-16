@@ -1,6 +1,7 @@
 import '@src/Options.css';
 import { withErrorBoundary, withSuspense } from '@extension/shared';
 import { ModelSettings } from './components/ModelSettings';
+import { SkillSettings } from './components/SkillSettings';
 
 const Options = () => {
   // Always-dark theme keyed to the logo
@@ -14,6 +15,7 @@ const Options = () => {
           Settings
         </h1>
         <ModelSettings isDarkMode={isDarkMode} />
+        <SkillSettings isDarkMode={isDarkMode} />
       </main>
     </div>
   );
