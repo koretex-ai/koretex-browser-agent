@@ -144,6 +144,16 @@ export async function cdpKey(tabId: number, combo: string): Promise<void> {
   });
 }
 
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+// Human-plausible pacing. CDP can fire keys ~1ms apart — far faster than any
+// typist — but Sheets opens its cell editor on the FIRST keystroke and
+// commits on Enter/Tab asynchronously; keys racing those transitions can be
+// silently dropped by the page. Typical cost: a 5-row write ≈ 1.5s.
+const COMMIT_SETTLE_MS = 150; // after Enter/Tab: commit + selection move
+const EDIT_OPEN_MS = 100; // after a segment's first char: editor opening
+const CHAR_MS = 5; // between ordinary characters
+
 /** One printable character as a real keydown/keyup pair. */
 async function cdpChar(tabId: number, ch: string): Promise<void> {
   const spec = keySpecFor(ch);
@@ -186,10 +196,17 @@ async function cdpChar(tabId: number, ch: string): Promise<void> {
  * the screenshot and clear them explicitly.
  */
 export async function cdpTypeFocused(tabId: number, text: string): Promise<void> {
+  let segmentStart = true;
   for (const ch of text) {
     if (ch === '\r') continue; // \r\n → one Enter, not two
-    if (ch === '\n') await cdpKey(tabId, 'Enter');
-    else if (ch === '\t') await cdpKey(tabId, 'Tab');
-    else await cdpChar(tabId, ch);
+    if (ch === '\n' || ch === '\t') {
+      await cdpKey(tabId, ch === '\n' ? 'Enter' : 'Tab');
+      await sleep(COMMIT_SETTLE_MS);
+      segmentStart = true;
+      continue;
+    }
+    await cdpChar(tabId, ch);
+    await sleep(segmentStart ? EDIT_OPEN_MS : CHAR_MS);
+    segmentStart = false;
   }
 }
