@@ -84,7 +84,7 @@ flowchart TD
 
 **Two tiers of thinking.** The per-step loop is deliberately fast, cheap, and myopic (a few seconds and a fraction of a cent per turn). When deterministic stuck-signals fire — the same action judged failed twice, repeated no-effect actions, pacing loops, or the navigator flagging itself — a **strategic review** runs with deep reasoning: it reads the whole journal, diagnoses the root cause (*"that filter is paywalled — stop fighting it, encode the constraint in the search URL"*), and pins an **active strategy** into every subsequent turn.
 
-**Division of labor.** Local models (via Ollama) are the *senses*: a vision grounding model resolves "the Post button inside the composer" to coordinates, and a small local model bulk-reads pages. The cloud navigator makes every *decision*. Deterministic code is the *conductor*: budgets, guards, dialog handling, typing mechanics.
+**Division of labor.** The cloud navigator is both the *eyes* and the *decision-maker* — the screenshot it receives each turn is the primary perception of the system. Local models (via Ollama) assist with two jobs: a vision grounding model resolves "the Post button inside the composer" to click coordinates, and a small local model bulk-reads page text so full pages never round-trip through the cloud. Deterministic code is the *conductor*: budgets, guards, dialog handling, typing mechanics.
 
 **Teaching flow:**
 
@@ -123,10 +123,13 @@ Every rule below was bought with a real failed run, not invented in advance.
 
 ## Privacy
 
-- **Local senses, cloud judgment.** Perception, click grounding, and bulk page reading run locally via Ollama. The cloud navigator receives screenshots of the active tab plus compact page digests — and every cloud call requests **no-data-retention routing** (providers that neither train on nor store prompts).
-- **Teaching** captures no screenshots in the saved skill; password fields are masked at the moment of capture; you review everything before saving.
+Plainly, so there is no ambiguity about the current architecture:
+
+- **In the default mode, screenshots of your active tab go to a cloud model at every step** — including whatever is visible in your logged-in session. This was a deliberate trade: the project began fully local (see [docs/original-vision.md](docs/original-vision.md)), and live runs showed that reliable judgment needs a strong multimodal model reading real pixels. Every cloud call requests **no-data-retention routing** (providers that neither train on nor store prompts), but the images do leave your machine.
+- **What stays local** (via Ollama): click grounding — resolving element descriptions to screen coordinates — and bulk page-text reading, so full pages never round-trip through the cloud; only the screenshot plus a compact digest (URL, title, element labels, a text sample) is sent.
+- **Teaching** captures no screenshots in the saved skill; password fields are masked at the moment of capture; you review everything before saving. The demonstration log is sent to the cloud once, for distilling, under the same no-retention routing.
 - **No credentials, ever.** The agent never logs in or handles passwords — if a login wall appears, it stops and tells you.
-- A fully local mode (no API key) exists: screenshots never leave the machine, at reduced capability.
+- A fully local mode (no API key) remains: nothing leaves the machine, at significantly reduced capability.
 
 ## Status
 
