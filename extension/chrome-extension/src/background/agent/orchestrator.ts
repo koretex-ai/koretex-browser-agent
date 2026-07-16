@@ -855,6 +855,10 @@ export async function distillSkill(
   signal: AbortSignal,
   onProgress?: ProgressFn,
 ): Promise<{ result: SkillDraft; usage: CallUsage }> {
+  // Same call shape as the strategic review: the navigator model with
+  // reasoning ON and fast-host routing — the default orchestrator path
+  // (reasoning-heavy, unrouted) made distilling visibly slow in live use
+  const { navigatorModel } = await chatSettingsStore.getSettings();
   const content =
     `DEMONSTRATION (chronological):\n${input.events.join('\n') || '(no events were recorded)'}` +
     (input.notes.length ? `\n\nNOTES from the user while demonstrating:\n${input.notes.join('\n')}` : '') +
@@ -864,7 +868,10 @@ export async function distillSkill(
     (input.qa.length
       ? `\n\nINTERVIEW ANSWERS:\n${input.qa.map(({ question, answer }) => `Q: ${question}\nA: ${answer}`).join('\n')}`
       : '');
-  const { value, usage } = await callOrchestrator<SkillDraft>(DISTILL_SYSTEM_PROMPT, content, signal, onProgress);
+  const { value, usage } = await callOrchestrator<SkillDraft>(DISTILL_SYSTEM_PROMPT, content, signal, onProgress, {
+    modelOverride: navigatorModel || undefined,
+    deepReview: true,
+  });
   if (!value.name || !value.guidance) throw new Error('Distiller returned an incomplete skill draft');
   return {
     result: {
