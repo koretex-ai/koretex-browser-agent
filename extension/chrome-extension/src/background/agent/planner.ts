@@ -1,7 +1,8 @@
 import type { Action } from '@extension/storage';
 import { chatSettingsStore } from '@extension/storage';
 import { createLogger } from '../log';
-import { fetchWithTimeout, withTimeout } from '../net';
+import { fetchWithTimeout } from '../net';
+import { callOrchestrator } from './orchestrator';
 import type { CallUsage } from './orchestrator';
 
 const logger = createLogger('planner');
@@ -93,87 +94,24 @@ async function callLocal(
   return data.message?.content ?? '';
 }
 
-// One non-streaming call to a cloud endpoint (OpenAI-compatible) — the
-// cloud-only mode's page reader. Carries the same resilience ladder the
-// orchestrator earned live: bounded connection AND body read, one
-// transparent retry on transients (an unguarded response.json() killed a
-// run with "Unexpected end of JSON input", 2026-07-16), no-retention
-// provider routing, and fastest-host-under-price-ceiling (an unrouted call
-// is how the navigator once landed on a 12 tok/s host).
-const CLOUD_READER_TIMEOUT_MS = 90_000;
-const CLOUD_READER_BODY_TIMEOUT_MS = 60_000;
-
-function isTransientCloudError(error: unknown): boolean {
-  if (error instanceof DOMException && error.name === 'AbortError') return false;
-  const message = error instanceof Error ? error.message : String(error);
-  return /failed to fetch|network|timed out|socket|HTTP 5\d\d|HTTP 429|Unexpected end of JSON/i.test(message);
-}
-
+// Cloud page reading goes through the ONE cloud gateway (callOrchestrator,
+// prose mode) so it inherits every check by default — bounded connection and
+// body reads, transient retry, no-retention routing, fast-host-under-price-
+// ceiling, reasoning off, output cap. This path used to carry its own copy
+// of that ladder and drifted (an unguarded response.json() and an unmuzzled
+// MiMo each killed a live run, 2026-07-16); per-call-site contracts are how
+// checks get missed, so no cloud call may bypass the gateway.
 async function callCloud(
   endpoint: Extract<PlannerEndpoint, { kind: 'cloud' }>,
   systemPrompt: string,
   userContent: string,
   signal: AbortSignal,
 ): Promise<{ content: string; usage: CallUsage }> {
-  const attempt = async (): Promise<{ content: string; usage: CallUsage }> => {
-    const response = await fetchWithTimeout(
-      `${endpoint.baseUrl.replace(/\/$/, '')}/chat/completions`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${endpoint.apiKey}`,
-          'HTTP-Referer': 'https://github.com/koretex-ai/browser-use',
-          'X-Title': 'Browser Use',
-        },
-        body: JSON.stringify({
-          model: endpoint.model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userContent },
-          ],
-          temperature: 0.1,
-          usage: { include: true },
-          // The local reader runs think:false; the cloud reader needs the
-          // same muzzle — without it MiMo rambles chain-of-thought and the
-          // extract comes back mangled/truncated (live 21:09 run: 1 article
-          // returned instead of 5). Same fix as the orchestrator's ea258c4.
-          reasoning: { enabled: false },
-          max_tokens: 2048,
-          // Page text crosses here — no-retention providers only, fastest
-          // host under the price ceiling (same constants as the orchestrator)
-          provider: {
-            data_collection: 'deny',
-            sort: 'throughput',
-            max_price: { prompt: 0.25, completion: 0.6 },
-          },
-        }),
-      },
-      signal,
-      CLOUD_READER_TIMEOUT_MS,
-    );
-    if (!response.ok) {
-      const detail = (await response.text().catch(() => '')).slice(0, 200);
-      throw new Error(`Cloud reader request failed (HTTP ${response.status}): ${detail}`);
-    }
-    const data = await withTimeout(response.json(), CLOUD_READER_BODY_TIMEOUT_MS, 'cloud reader body read');
-    if (data.error) throw new Error(typeof data.error === 'string' ? data.error : JSON.stringify(data.error));
-    const usage: CallUsage = {
-      model: data.model ?? endpoint.model,
-      cost: typeof data.usage?.cost === 'number' ? data.usage.cost : null,
-      promptTokens: data.usage?.prompt_tokens ?? null,
-      completionTokens: data.usage?.completion_tokens ?? null,
-    };
-    return { content: data.choices?.[0]?.message?.content ?? '', usage };
-  };
-
-  try {
-    return await attempt();
-  } catch (error) {
-    if (!isTransientCloudError(error)) throw error;
-    logger.warning('cloud reader transient failure — retrying once:', error);
-    return attempt();
-  }
+  const { value, usage } = await callOrchestrator<string>(systemPrompt, userContent, signal, undefined, {
+    modelOverride: endpoint.model,
+    prose: true,
+  });
+  return { content: value, usage };
 }
 
 async function callText(

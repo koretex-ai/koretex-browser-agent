@@ -516,6 +516,14 @@ interface CallOpts {
    * deep thinking is the point.
    */
   deepReview?: boolean;
+  /**
+   * Disciplined PROSE call (the cloud page reader): full lowLatency contract
+   * — fast-host routing, reasoning off, output cap, short window — but no
+   * JSON response format, and the raw content string is returned unparsed.
+   * Exists so non-JSON calls still go through THIS gateway and inherit every
+   * check by default instead of growing their own (drifting) copy.
+   */
+  prose?: boolean;
 }
 
 // Network-transient errors (connection drop, provider blip, timeout) get one
@@ -546,7 +554,7 @@ export async function callOrchestrator<T>(
 
   // Per-step navigator turns must be snappy — a shorter window plus the
   // image-free fallback beats waiting out two 90s stalls
-  const timeoutMs = opts?.lowLatency ? 60_000 : CLOUD_CALL_TIMEOUT_MS;
+  const timeoutMs = opts?.lowLatency || opts?.prose ? 60_000 : CLOUD_CALL_TIMEOUT_MS;
 
   const attemptRequest = async (
     messages: { role: string; content: MessageContent }[],
@@ -568,7 +576,7 @@ export async function callOrchestrator<T>(
       // and excludes the expensive tier; throughput picks the fastest of them.
       provider: {
         data_collection: 'deny',
-        ...(opts?.lowLatency || opts?.deepReview
+        ...(opts?.lowLatency || opts?.deepReview || opts?.prose
           ? { sort: 'throughput', max_price: { prompt: 0.25, completion: 0.6 } }
           : {}),
       },
@@ -580,6 +588,8 @@ export async function callOrchestrator<T>(
       ...(opts?.lowLatency
         ? { reasoning: { enabled: false }, response_format: { type: 'json_object' }, max_tokens: 4096 }
         : {}),
+      // Prose calls (the page reader) get the same muzzle without the JSON format
+      ...(opts?.prose ? { reasoning: { enabled: false }, max_tokens: 4096 } : {}),
       // Strategic reviews are the inverse trade: reasoning stays ON (deep
       // thinking is the point), with a generous-but-bounded output budget
       ...(opts?.deepReview ? { response_format: { type: 'json_object' }, max_tokens: 8192 } : {}),
@@ -594,8 +604,8 @@ export async function callOrchestrator<T>(
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${orchestratorApiKey}`,
-          'HTTP-Referer': 'https://github.com/koretex-ai/local-browser-use',
-          'X-Title': 'Local Browser Use',
+          'HTTP-Referer': 'https://github.com/koretex-ai/browser-use',
+          'X-Title': 'Browser Use',
         },
         body,
       },
@@ -664,6 +674,8 @@ export async function callOrchestrator<T>(
     userMessage,
   ];
   const first = await request(messages);
+  // Prose mode: the caller wants the text itself, not a parsed object
+  if (opts?.prose) return { value: first.content as unknown as T, usage: first.usage };
   try {
     return { value: parseJsonObject<T>(first.content), usage: first.usage };
   } catch (parseError) {
