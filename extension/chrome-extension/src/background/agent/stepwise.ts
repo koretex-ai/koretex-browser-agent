@@ -5,7 +5,7 @@ import { postExecutionEvent } from '../events';
 import { capturePageState } from '../perception';
 import { streamCloudChatReply } from './chat';
 import { nextStep, strategicReview, reportOutcome, curateCollection } from './orchestrator';
-import { skillsFor } from './skills';
+import { applicableSkills, skillsFor } from './skills';
 import type { ProgramStep, CallUsage } from './orchestrator';
 import { createStepRunner, describeStep, listLines, itemKey } from './program';
 
@@ -363,6 +363,8 @@ export async function runStepwiseTask(
   let activeStrategy = '';
   let lastStrategyText = '';
   let reviewsUsed = 0;
+  // Which playbooks the navigator is currently reading — announced on change
+  let lastSkillsKey = '';
   const runReview = async (
     stuckSignal: string,
     observed: { digest?: string; screenshot?: string },
@@ -477,6 +479,20 @@ export async function runStepwiseTask(
         heartbeat('Looking at the result and deciding the next step…');
       }
       const observed = await observe();
+
+      // Surface playbook activation in the trace + journal whenever the set
+      // changes — the trigger is deterministic (host/path substring or
+      // objective match, in code), so the trace can state it as fact
+      const activeSkills = applicableSkills(goalText, currentUrlPath);
+      const skillsKey = activeSkills.map(skill => skill.name).join(', ');
+      if (skillsKey !== lastSkillsKey) {
+        lastSkillsKey = skillsKey;
+        if (skillsKey) {
+          note(`site playbooks in force: ${skillsKey}`);
+          postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `📘 Site playbooks in force: ${skillsKey}`);
+        }
+      }
+
       let call;
       try {
         call = await nextStep(

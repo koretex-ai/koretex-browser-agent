@@ -77,13 +77,19 @@ export const SKILLS: Skill[] = [
 ];
 
 /**
- * Render the playbooks applicable to this turn — empty string when none.
- * Matched against the live tab's host+path and the objective text.
+ * The playbooks applicable to this turn, matched against the live tab's
+ * host+path and the objective text.
  */
-export function skillsFor(objective: string, urlPath: string): string {
-  const hits = SKILLS.filter(
+export function applicableSkills(objective: string, urlPath: string): Skill[] {
+  return SKILLS.filter(
     skill =>
       skill.hosts.some(host => urlPath.includes(host)) || (skill.intent ? skill.intent.test(objective) : false),
   );
-  return hits.map(skill => `● ${skill.name}\n${skill.guidance}`).join('\n\n');
+}
+
+/** Render the applicable playbooks as prompt text — empty string when none. */
+export function skillsFor(objective: string, urlPath: string): string {
+  return applicableSkills(objective, urlPath)
+    .map(skill => `● ${skill.name}\n${skill.guidance}`)
+    .join('\n\n');
 }
