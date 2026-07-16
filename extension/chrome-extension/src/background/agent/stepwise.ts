@@ -6,6 +6,7 @@ import { capturePageState } from '../perception';
 import { streamCloudChatReply } from './chat';
 import { nextStep, strategicReview, reportOutcome, curateCollection } from './orchestrator';
 import { allSkills, applicableSkills, renderSkills } from './skills';
+import { armDialogGuard } from '../actions/cdp';
 import type { ProgramStep, CallUsage } from './orchestrator';
 import { createStepRunner, describeStep, listLines, itemKey } from './program';
 
@@ -366,6 +367,21 @@ export async function runStepwiseTask(
   // Built-in + user-defined playbooks, loaded once per run; a custom skill
   // sharing a built-in's name replaces it
   const skillSet = allSkills(await skillStore.getAll().catch(() => []));
+
+  // Native dialogs (beforeunload/alert/confirm) freeze the tab and are
+  // invisible to every sense — the guard auto-handles them at the browser
+  // level and reports here so the journal records what happened
+  await armDialogGuard(tabId, ({ kind, message, accepted }) => {
+    const label =
+      kind === 'beforeunload'
+        ? '"Leave site?" — the page warned of unsaved changes; unsaved work on the previous page may be lost'
+        : `${kind}${message ? ` — "${message}"` : ''}`;
+    note(`native browser dialog ${accepted ? 'auto-accepted' : 'dismissed'}: ${label}`);
+    postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `🛡 Native dialog ${accepted ? 'accepted' : 'dismissed'}: ${label}`);
+  }).catch(error => {
+    // e.g. DevTools already open on the tab — run continues unguarded
+    logger.warning('dialog guard unavailable:', error);
+  });
   // Which playbooks the navigator is currently reading — announced on change
   let lastSkillsKey = '';
   const runReview = async (

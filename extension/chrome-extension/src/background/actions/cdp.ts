@@ -47,6 +47,7 @@ async function ensureAttached(tabId: number): Promise<void> {
 
 /** Detach at task end (also safe to call when never attached). */
 export async function detachCdp(tabId: number): Promise<void> {
+  dialogCallbacks.delete(tabId);
   if (!attached.has(tabId)) return;
   attached.delete(tabId);
   await chrome.debugger.detach({ tabId }).catch(() => {});
@@ -55,8 +56,58 @@ export async function detachCdp(tabId: number): Promise<void> {
 
 // Chrome cleans up on tab close; keep our bookkeeping in sync
 chrome.debugger.onDetach.addListener(source => {
-  if (source.tabId !== undefined) attached.delete(source.tabId);
+  if (source.tabId !== undefined) {
+    attached.delete(source.tabId);
+    dialogCallbacks.delete(source.tabId);
+  }
 });
+
+// ---- NATIVE DIALOG GUARD ----
+// A native browser dialog (beforeunload "Leave site?", alert, confirm) is
+// invisible to every sense the agent has: it is not in the DOM, synthetic
+// clicks cannot reach it, CDP keyboard input goes to the PAGE not the
+// browser, and page JS is FROZEN while it is up — so perception times out
+// and the run goes blind (live failure 2026-07-16: an unsaved Sheets tab
+// popped "Leave site?" on navigate and the run starved to death on blind
+// waits). The ONLY channel that can press those buttons is the debugger's
+// Page domain, so the guard must live here in the harness, not in prompts.
+//
+// Policy: beforeunload is auto-ACCEPTED — the agent itself decided to
+// navigate; the dialog is Chrome double-checking. That may discard unsaved
+// page state, so the callback surfaces what happened for the journal.
+// alert has only one button — accept. confirm/prompt are auto-DISMISSED
+// (the conservative answer); the journal note lets the navigator route
+// around whatever the page wanted to confirm.
+
+export interface DialogEvent {
+  kind: string;
+  message: string;
+  accepted: boolean;
+}
+
+const dialogCallbacks = new Map<number, (event: DialogEvent) => void>();
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (method !== 'Page.javascriptDialogOpening' || source.tabId === undefined) return;
+  const { type, message } = (params ?? {}) as { type?: string; message?: string };
+  const accept = type === 'beforeunload' || type === 'alert';
+  chrome.debugger
+    .sendCommand({ tabId: source.tabId }, 'Page.handleJavaScriptDialog', { accept })
+    .catch(error => logger.warning('could not handle native dialog:', error));
+  logger.info(`native ${type ?? 'dialog'} ${accept ? 'accepted' : 'dismissed'} on tab`, source.tabId);
+  dialogCallbacks.get(source.tabId)?.({ kind: type ?? 'dialog', message: message ?? '', accepted: accept });
+});
+
+/**
+ * Attach (if needed) and start auto-handling native dialogs on this tab for
+ * the rest of the task. Attaching up front also FIXES page geometry for the
+ * whole run — the debugger infobar reflows the viewport once, before the
+ * first perception, instead of mid-task on the first type_focused.
+ */
+export async function armDialogGuard(tabId: number, onDialog: (event: DialogEvent) => void): Promise<void> {
+  await send(tabId, 'Page.enable');
+  dialogCallbacks.set(tabId, onDialog);
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function send(tabId: number, method: string, params?: Record<string, any>): Promise<void> {
