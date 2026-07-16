@@ -440,6 +440,25 @@ export async function runStepwiseTask(
     return 'continue';
   };
 
+  // A stuck/futility signal demands escalation: strategic review if any
+  // remain, otherwise the run is out of strategies — stop honestly instead
+  // of flailing until a harder guard kills it (live case: 20 post-review
+  // steps with futility signals firing into a void)
+  const escalate = async (
+    stuckSignal: string,
+    observed: { digest?: string; screenshot?: string },
+  ): Promise<'continue' | 'ended'> => {
+    if (reviewsUsed < MAX_REVIEWS) return runReview(stuckSignal, observed);
+    note(`stuck again with all ${MAX_REVIEWS} strategic reviews spent: ${stuckSignal.slice(0, 160)}`);
+    postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `🧭 Out of strategies — ${stuckSignal.slice(0, 180)}`);
+    await report(
+      'partial',
+      `Out of strategies: all ${MAX_REVIEWS} strategic reviews were spent and the run is stuck again (${stuckSignal.slice(0, 160)}).`,
+    );
+    outcomeSummary = 'out of strategies';
+    return 'ended';
+  };
+
   try {
     heartbeat('Looking at the page and deciding the first step…');
     while (stepsUsed < MAX_STEPS) {
@@ -545,11 +564,11 @@ export async function runStepwiseTask(
           return;
         }
         await persist('running');
-        if (stuckSignal && reviewsUsed < MAX_REVIEWS && !outOfTime()) {
-          const outcomeOfReview = await runReview(stuckSignal, observed);
+        if (stuckSignal && !outOfTime()) {
+          const outcomeOfReview = await escalate(stuckSignal, observed);
           if (outcomeOfReview === 'ended') {
             outcome = record.outcome === 'ok' ? 'ok' : 'fail';
-            outcomeSummary = 'ended by strategic review';
+            outcomeSummary = outcomeSummary || 'ended by strategic review';
             return;
           }
           // Re-decide from a fresh observation under the new strategy —
@@ -562,15 +581,15 @@ export async function runStepwiseTask(
 
       // Navigator flagged itself as circling — escalate before acting on a
       // decision that is likely part of the circle
-      if (decision.decision === 'step' && decision.stuck && reviewsUsed < MAX_REVIEWS && !outOfTime()) {
+      if (decision.decision === 'step' && decision.stuck && !outOfTime()) {
         note('the navigator flagged that it is circling without progress');
-        const outcomeOfReview = await runReview(
+        const outcomeOfReview = await escalate(
           'the navigator itself flagged that it is circling without making progress',
           observed,
         );
         if (outcomeOfReview === 'ended') {
           outcome = record.outcome === 'ok' ? 'ok' : 'fail';
-          outcomeSummary = 'ended by strategic review';
+          outcomeSummary = outcomeSummary || 'ended by strategic review';
           return;
         }
         continue;
@@ -666,14 +685,14 @@ export async function runStepwiseTask(
           outcomeSummary = 'side-effect repeat blocked';
           return;
         }
-        if (reviewsUsed < MAX_REVIEWS && !outOfTime()) {
-          const outcomeOfReview = await runReview(
+        if (!outOfTime()) {
+          const outcomeOfReview = await escalate(
             'the runtime blocked a re-issue of a side-effect action whose outcome is unconfirmed',
             observed,
           );
           if (outcomeOfReview === 'ended') {
             outcome = record.outcome === 'ok' ? 'ok' : 'fail';
-            outcomeSummary = 'ended by strategic review';
+            outcomeSummary = outcomeSummary || 'ended by strategic review';
             return;
           }
         }
@@ -690,14 +709,14 @@ export async function runStepwiseTask(
           outcomeSummary = 'repeat-decision loop';
           return;
         }
-        if (reviewsUsed < MAX_REVIEWS && !outOfTime()) {
-          const outcomeOfReview = await runReview(
+        if (!outOfTime()) {
+          const outcomeOfReview = await escalate(
             `the navigator decided an action that has already failed twice: ${describeStep(step).slice(0, 100)}`,
             observed,
           );
           if (outcomeOfReview === 'ended') {
             outcome = record.outcome === 'ok' ? 'ok' : 'fail';
-            outcomeSummary = 'ended by strategic review';
+            outcomeSummary = outcomeSummary || 'ended by strategic review';
             return;
           }
         }
@@ -708,17 +727,17 @@ export async function runStepwiseTask(
       // even when every occurrence "succeeded" — is a loop no failure signal
       // sees (live case: 27 steps of scroll-up/scroll-down/extract circling)
       const windowRepeats = recentFingerprints.filter(fp => fp === fingerprint).length;
-      if (windowRepeats >= FUTILITY_REPEATS && reviewsUsed < MAX_REVIEWS && !outOfTime()) {
+      if (windowRepeats >= FUTILITY_REPEATS && !outOfTime()) {
         note(
           `pacing detected: "${describeStep(step)}" chosen ${windowRepeats + 1} times in the last ${FUTILITY_WINDOW} steps without the task advancing`,
         );
-        const outcomeOfReview = await runReview(
+        const outcomeOfReview = await escalate(
           `the run is pacing — the same action (${describeStep(step).slice(0, 80)}) keeps recurring without the task advancing`,
           observed,
         );
         if (outcomeOfReview === 'ended') {
           outcome = record.outcome === 'ok' ? 'ok' : 'fail';
-          outcomeSummary = 'ended by strategic review';
+          outcomeSummary = outcomeSummary || 'ended by strategic review';
           return;
         }
         continue;
@@ -757,15 +776,30 @@ export async function runStepwiseTask(
           }
           continue;
         }
-        const before = collection.length;
-        recordExtract('collected from the screenshot by the navigator', items.join('\n'));
-        const added = collection.length - before;
+        // Trust the navigator's items verbatim — recordExtract's listLines()
+        // heuristics expect the local reader's bulleted output and silently
+        // discard plain lines (live case: "record 5 item(s) ✓ — 0 new" ×3)
+        let added = 0;
+        for (const item of items) {
+          const key = itemKey(item);
+          if (!key || collectionKeys.has(key)) continue;
+          collectionKeys.add(key);
+          collection.push(item);
+          added++;
+        }
+        note(
+          added > 0
+            ? `collected +${added} item(s) from the screen (${collection.length} total)`
+            : `collect added nothing new — all ${items.length} item(s) were already in the collection (${collection.length} total)`,
+        );
         postExecutionEvent(
           port,
           Actors.SYSTEM,
           'step.ok',
           taskId,
-          `Step ${stepsUsed}: ${description} ✓ — ${added} new, ${collection.length} total`,
+          added > 0
+            ? `Step ${stepsUsed}: ${description} ✓ — ${added} new, ${collection.length} total`
+            : `Step ${stepsUsed}: ${description} ⚠ — 0 new (all ${items.length} already collected), ${collection.length} total`,
           '⚙ recorded',
         );
         lastAction = null;
