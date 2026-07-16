@@ -78,7 +78,7 @@ function MessageBlock({ message, isSameActor, isDarkMode = false }: MessageBlock
           )}
           {!isProgress && (
             <div className="flex items-center justify-between gap-2">
-              <div className={`truncate text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+              <div className={`break-words text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                 {message.meta ?? ''}
               </div>
               <div className={`shrink-0 text-right text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-300'}`}>

@@ -406,7 +406,7 @@ export async function runStepwiseTask(
         Actors.SYSTEM,
         'step.ok',
         taskId,
-        `🧭 Review: objective already delivered — ${(review.diagnosis ?? '').slice(0, 180)}`,
+        `🧭 Review: objective already delivered — ${review.diagnosis ?? ''}`,
         meta,
       );
       await report('achieved', '');
@@ -419,7 +419,7 @@ export async function runStepwiseTask(
         Actors.SYSTEM,
         'step.ok',
         taskId,
-        `🧭 Review: blocked — ${(review.reason ?? review.diagnosis ?? '').slice(0, 180)}`,
+        `🧭 Review: blocked — ${review.reason ?? review.diagnosis ?? ''}`,
         meta,
       );
       await report('partial', `Blocked: ${review.reason ?? 'the strategist found no route around the obstacle'}`);
@@ -442,7 +442,7 @@ export async function runStepwiseTask(
     note(
       `STRATEGIC REVIEW (${stuckSignal.slice(0, 80)}): ${(review.diagnosis ?? '').slice(0, 140)} → new strategy in force`,
     );
-    postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `🧭 Strategy: ${strategy.slice(0, 240)}`, meta);
+    postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `🧭 Strategy: ${strategy}`, meta);
     await persist('running');
     return 'continue';
   };
@@ -457,7 +457,7 @@ export async function runStepwiseTask(
   ): Promise<'continue' | 'ended'> => {
     if (reviewsUsed < MAX_REVIEWS) return runReview(stuckSignal, observed);
     note(`stuck again with all ${MAX_REVIEWS} strategic reviews spent: ${stuckSignal.slice(0, 160)}`);
-    postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `🧭 Out of strategies — ${stuckSignal.slice(0, 180)}`);
+    postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `🧭 Out of strategies — ${stuckSignal}`);
     await report(
       'partial',
       `Out of strategies: all ${MAX_REVIEWS} strategic reviews were spent and the run is stuck again (${stuckSignal.slice(0, 160)}).`,
@@ -538,7 +538,9 @@ export async function runStepwiseTask(
       logger.info('decision:', JSON.stringify(decision).slice(0, 500));
 
       // ---- BOOK THE JUDGMENT of the previous step ----
-      const assessment = (decision.assessment ?? '').slice(0, 220);
+      // Shown in full in the trace (debugging value); journal note() caps its
+      // own lines for the model's context budget
+      const assessment = decision.assessment ?? '';
       if (lastAction) {
         const verdict = decision.last_action ?? 'uncertain';
         const mark = verdict === 'succeeded' ? '✓' : verdict === 'failed' ? '✗' : '⚠';
@@ -685,7 +687,7 @@ export async function runStepwiseTask(
       if (fault) {
         rejections++;
         note(`step rejected by the runtime: ${fault}`);
-        postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `Refining the step (${fault.slice(0, 160)})`, decideMeta);
+        postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `Refining the step (${fault})`, decideMeta);
         if (rejections >= MAX_REJECTIONS) {
           await report('partial', `The navigator could not produce a valid step: ${fault}`);
           outcome = 'fail';
@@ -774,7 +776,7 @@ export async function runStepwiseTask(
         Actors.SYSTEM,
         'step.ok',
         taskId,
-        `Step ${stepsUsed}: ${description}${decision.why ? ` — ${decision.why.slice(0, 120)}` : ''}`,
+        `Step ${stepsUsed}: ${description}${decision.why ? ` — ${decision.why}` : ''}`,
         decideMeta,
       );
 
@@ -848,7 +850,7 @@ export async function runStepwiseTask(
           Actors.SYSTEM,
           'step.ok',
           taskId,
-          `Step ${stepsUsed}: ${description} ✗ — ${exec.message.slice(0, 160)}`,
+          `Step ${stepsUsed}: ${description} ✗ — ${exec.message}`,
           '⚙ executor failed',
         );
         note(`step ${stepsUsed} could not execute: ${describeStep(step)} — ${exec.message.slice(0, 180)}`);
