@@ -134,6 +134,12 @@ async function callCloud(
           ],
           temperature: 0.1,
           usage: { include: true },
+          // The local reader runs think:false; the cloud reader needs the
+          // same muzzle — without it MiMo rambles chain-of-thought and the
+          // extract comes back mangled/truncated (live 21:09 run: 1 article
+          // returned instead of 5). Same fix as the orchestrator's ea258c4.
+          reasoning: { enabled: false },
+          max_tokens: 2048,
           // Page text crosses here — no-retention providers only, fastest
           // host under the price ceiling (same constants as the orchestrator)
           provider: {
