@@ -54,15 +54,24 @@ export async function groundTarget(tabId: number, instruction: string, signal: A
   // Cloud-only mode: the navigator model is GUI-agent-trained — it grounds
   // coordinates from the same screenshots it already judges from
   if (cloudOnly) {
-    const { value, usage } = await callOrchestrator<{ x: number; y: number }>(
-      'You are a web UI grounding model. Reply ONLY with JSON {"x": <int>, "y": <int>} — the pixel coordinates of the single point to click.',
-      groundingPrompt(shot.width, shot.height, instruction),
-      signal,
-      undefined,
-      { imageDataUrl: shot.dataUrl, modelOverride: navigatorModel || undefined, lowLatency: true },
-    );
-    logger.info(`cloud grounding (${usage.model}): x=${value.x} y=${value.y} $${usage.cost ?? '?'}`);
-    let point = { x: Number(value.x), y: Number(value.y) };
+    // One retry on junk coordinates: a single malformed reply (prose, nulls,
+    // truncation) should cost one extra call, not fail the step outright —
+    // live WhatsApp runs 2026-07-18 died on "returned no coordinates"
+    let point = { x: Number.NaN, y: Number.NaN };
+    for (let attempt = 0; attempt < 2 && !(Number.isFinite(point.x) && Number.isFinite(point.y)); attempt++) {
+      const { value, usage } = await callOrchestrator<{ x: number; y: number }>(
+        'You are a web UI grounding model. Reply ONLY with JSON {"x": <int>, "y": <int>} — the pixel coordinates of the single point to click.',
+        groundingPrompt(shot.width, shot.height, instruction) +
+          (attempt > 0 ? '\nYour previous reply had no usable coordinates — reply with ONLY the JSON object.' : ''),
+        signal,
+        undefined,
+        { imageDataUrl: shot.dataUrl, modelOverride: navigatorModel || undefined, lowLatency: true },
+      );
+      logger.info(
+        `cloud grounding (${usage.model}, try ${attempt + 1}): x=${value.x} y=${value.y} $${usage.cost ?? '?'}`,
+      );
+      point = { x: Number(value.x), y: Number(value.y) };
+    }
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y))
       throw new Error('Cloud grounder returned no coordinates');
     if (point.x > shot.width || point.y > shot.height) {

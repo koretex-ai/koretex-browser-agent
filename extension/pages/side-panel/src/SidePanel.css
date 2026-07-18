@@ -1,13 +1,15 @@
-/* Dark theme keyed to the koretex logo: near-black green + spring green accents */
+/* Monochrome dark theme: black surfaces, white text and outlines */
 body {
-  border-color: #123d2b !important;
+  background: #000000;
+  color: #ffffff;
+  border-color: #333333 !important;
 }
 
 code {
-  background: rgba(43, 232, 125, 0.12);
+  background: rgba(255, 255, 255, 0.12);
   border-radius: 0.25rem;
   padding: 0.2rem 0.5rem;
-  color: #59f09c;
+  color: #ffffff;
 }
 
 /* Scrollbar styles */
@@ -16,16 +18,16 @@ code {
 }
 
 ::-webkit-scrollbar-track {
-  background: #0e1d14;
+  background: #0a0a0a;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #1f7a4a;
+  background: #3d3d3d;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #2be87d;
+  background: #e8e8e8;
 }
 
 /* Used classes from the component */
@@ -35,7 +37,7 @@ code {
   align-items: center;
   padding: 0.75rem;
   background-color: transparent;
-  border-bottom: 1px solid rgba(43, 232, 125, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
 }
 
 .header-logo {
@@ -50,31 +52,31 @@ code {
 }
 
 .header-icon {
-  color: #2be87d;
+  color: #e8e8e8;
   cursor: pointer;
   transition: color 0.2s ease;
   opacity: 0.85;
 }
 
 .header-icon:hover {
-  color: #59f09c;
+  color: #ffffff;
   opacity: 1;
 }
 
 .send-button {
-  color: #2be87d;
+  color: #e8e8e8;
   cursor: pointer;
   transition: color 0.2s ease;
   opacity: 0.85;
 }
 
 .send-button:hover {
-  color: #59f09c;
+  color: #ffffff;
   opacity: 1;
 }
 
 .send-button:disabled {
-  color: #3a5c49;
+  color: #555555;
   cursor: not-allowed;
   opacity: 0.5;
 }

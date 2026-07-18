@@ -19,28 +19,26 @@
   justify-content: center;
 }
 
-code {
-  background: rgba(148, 163, 184, 0.5);
-  border-radius: 0.25rem;
-  padding: 0.2rem 0.5rem;
+/* Monochrome dark theme: black surfaces, white text and outlines */
+body {
+  background: #000000;
 }
 
-/* Dark mode support */
-@media (prefers-color-scheme: dark) {
-  code {
-    background: rgba(30, 58, 138, 0.4);
-    color: #7dd3fc;
-  }
+code {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  color: #ffffff;
+}
 
-  .dark-mode-text {
-    color: #e2e8f0 !important; /* slate-200 */
-  }
+.dark-mode-text {
+  color: #ffffff !important;
+}
 
-  .dark-mode-bg {
-    background-color: #1e293b !important; /* slate-800 */
-  }
+.dark-mode-bg {
+  background-color: #0a0a0a !important;
+}
 
-  .dark-mode-border {
-    border-color: #475569 !important; /* slate-600 */
-  }
+.dark-mode-border {
+  border-color: #3d3d3d !important;
 }

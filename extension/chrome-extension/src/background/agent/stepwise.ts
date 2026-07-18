@@ -8,6 +8,7 @@ import { streamCloudChatReply } from './chat';
 import { nextStep, strategicReview, reportOutcome, curateCollection } from './orchestrator';
 import { allSkills, applicableSkills, renderSkills, skillCatalog } from './skills';
 import { armDialogGuard } from '../actions/cdp';
+import { stashSuccessfulRun } from '../recorder/teach';
 import type { ProgramStep, CallUsage } from './orchestrator';
 import { createStepRunner, describeStep, listLines, itemKey } from './program';
 
@@ -158,6 +159,26 @@ export async function runStepwiseTask(
     record.outcome = 'ok';
     record.answer = answer;
     postExecutionEvent(port, Actors.ASSISTANT, 'task.ok', taskId, answer, `${meta} · ${totalMeta()}`);
+    // Offer to distill the winning route into a skill — but only when the run
+    // actually produced NEW knowledge: either no playbook was pinned (novel
+    // territory), or one was pinned but the run still hit a stuck signal hard
+    // enough to need a strategic review (the playbook's route wasn't enough;
+    // what the review discovered is knowledge worth keeping). A success that
+    // simply followed an existing skill teaches nothing — offering to distill
+    // it would just mint a duplicate of the skill that carried the run.
+    const novelRun = pinnedSkillNames.size === 0 || reviewsUsed > 0;
+    if (journal.length > 0 && novelRun) {
+      stashSuccessfulRun({
+        objective: goalText,
+        journal: journal.slice(),
+        pinnedSkills: [...pinnedSkillNames],
+      }).catch(error => logger.warning('skillify stash failed:', error));
+      try {
+        port.postMessage({ type: 'skillify_offer', objective: goalText });
+      } catch {
+        /* panel closed — nothing to offer */
+      }
+    }
   };
   const finishFail = (reason: string, meta: string) => {
     record.outcome = 'fail';
@@ -418,13 +439,23 @@ export async function runStepwiseTask(
         ? '"Leave site?" — the page warned of unsaved changes; unsaved work on the previous page may be lost'
         : `${kind}${message ? ` — "${message}"` : ''}`;
     note(`native browser dialog ${accepted ? 'auto-accepted' : 'dismissed'}: ${label}`);
-    postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `🛡 Native dialog ${accepted ? 'accepted' : 'dismissed'}: ${label}`);
+    postExecutionEvent(
+      port,
+      Actors.SYSTEM,
+      'step.ok',
+      taskId,
+      `🛡 Native dialog ${accepted ? 'accepted' : 'dismissed'}: ${label}`,
+    );
   }).catch(error => {
     // e.g. DevTools already open on the tab — run continues unguarded
     logger.warning('dialog guard unavailable:', error);
   });
   // Which playbooks the navigator is currently reading — announced on change
   let lastSkillsKey = '';
+  // Every playbook pinned at any point this run — gates the save-as-skill
+  // offer (a run that just followed an existing skill teaches nothing new;
+  // see finishOk) and tells the distiller what knowledge already exists
+  const pinnedSkillNames = new Set<string>();
   const runReview = async (
     stuckSignal: string,
     observed: { digest?: string; screenshot?: string },
@@ -575,6 +606,7 @@ export async function runStepwiseTask(
       if (skillsKey !== lastSkillsKey) {
         lastSkillsKey = skillsKey;
         if (skillsKey) {
+          for (const skill of activeSkills) pinnedSkillNames.add(skill.name);
           note(`site playbooks in force: ${skillsKey}`);
           postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `📘 Site playbooks in force: ${skillsKey}`);
         }
@@ -587,9 +619,7 @@ export async function runStepwiseTask(
             objective: goalText,
             journal,
             pageDigest: observed.digest,
-            lastAction: lastAction
-              ? { description: lastAction.description, execNote: lastAction.execNote }
-              : null,
+            lastAction: lastAction ? { description: lastAction.description, execNote: lastAction.execNote } : null,
             stepsUsed,
             maxSteps: MAX_STEPS,
             timeRemainingMin: Math.max(0, Math.round((deadline - Date.now()) / 60_000)),
@@ -746,7 +776,14 @@ export async function runStepwiseTask(
 
       if (decision.decision === 'done') {
         note(`navigator declared done: ${assessment || '(no evidence stated)'}`);
-        postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `Objective judged complete — ${assessment}`, decideMeta);
+        postExecutionEvent(
+          port,
+          Actors.SYSTEM,
+          'step.ok',
+          taskId,
+          `Objective judged complete — ${assessment}`,
+          decideMeta,
+        );
         await report('achieved', '');
         outcome = 'ok';
         outcomeSummary = 'objective met';

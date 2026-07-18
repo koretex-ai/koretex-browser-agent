@@ -1,4 +1,4 @@
-# Local Browser Use — extension
+# Koretex Browser Agent — extension
 
 Chrome MV3 side-panel extension for the local browser-use agent. Chat runs fully locally against an Ollama model; browser perception/action arrives in later phases (see `../DESIGN.md`).
 

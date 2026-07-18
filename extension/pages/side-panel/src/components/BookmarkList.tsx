@@ -95,8 +95,8 @@ const BookmarkList: React.FC<BookmarkListProps> = ({
             onDragOver={handleDragOver}
             onDrop={e => handleDrop(e, bookmark.id)}
             className={`group relative rounded-lg p-3 ${
-              isDarkMode ? 'bg-[#0E1D14] hover:bg-[#143122]' : 'bg-white hover:bg-sky-50'
-            } border ${isDarkMode ? 'border-[#1F7A4A]/40' : 'border-sky-100'}`}>
+              isDarkMode ? 'bg-[#0A0A0A] hover:bg-[#1A1A1A]' : 'bg-white hover:bg-sky-50'
+            } border ${isDarkMode ? 'border-[#3D3D3D]/40' : 'border-sky-100'}`}>
             {editingId === bookmark.id ? (
               <div className="flex items-center">
                 <input
@@ -106,7 +106,7 @@ const BookmarkList: React.FC<BookmarkListProps> = ({
                   onChange={e => setEditTitle(e.target.value)}
                   className={`mr-2 grow rounded px-2 py-1 text-sm ${
                     isDarkMode
-                      ? 'border-[#1F7A4A]/50 bg-[#12251A] text-gray-200'
+                      ? 'border-[#3D3D3D]/50 bg-[#141414] text-gray-200'
                       : 'border-sky-100 bg-white text-gray-700'
                   } border`}
                 />
@@ -114,7 +114,7 @@ const BookmarkList: React.FC<BookmarkListProps> = ({
                   onClick={() => handleSaveEdit(bookmark.id)}
                   className={`rounded p-1 ${
                     isDarkMode
-                      ? 'bg-[#143122] text-[#2BE87D] hover:bg-[#1B4630]'
+                      ? 'bg-[#1A1A1A] text-[#E8E8E8] hover:bg-[#2A2A2A]'
                       : 'bg-white text-green-500 hover:bg-gray-100'
                   }`}
                   aria-label={t('chat_bookmarks_saveEdit')}
@@ -125,7 +125,7 @@ const BookmarkList: React.FC<BookmarkListProps> = ({
                   onClick={handleCancelEdit}
                   className={`ml-1 rounded p-1 ${
                     isDarkMode
-                      ? 'bg-[#143122] text-red-400 hover:bg-[#1B4630]'
+                      ? 'bg-[#1A1A1A] text-red-400 hover:bg-[#2A2A2A]'
                       : 'bg-white text-red-500 hover:bg-gray-100'
                   }`}
                   aria-label={t('chat_bookmarks_cancelEdit')}
@@ -164,7 +164,7 @@ const BookmarkList: React.FC<BookmarkListProps> = ({
                   }}
                   className={`absolute right-[28px] top-1/2 z-10 -translate-y-1/2 rounded p-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 ${
                     isDarkMode
-                      ? 'bg-[#143122] text-[#2BE87D] hover:bg-[#1B4630]'
+                      ? 'bg-[#1A1A1A] text-[#E8E8E8] hover:bg-[#2A2A2A]'
                       : 'bg-white text-sky-500 hover:bg-gray-100'
                   }`}
                   aria-label={t('chat_bookmarks_edit')}
@@ -182,7 +182,7 @@ const BookmarkList: React.FC<BookmarkListProps> = ({
                   }}
                   className={`absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded p-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 ${
                     isDarkMode
-                      ? 'bg-[#143122] text-gray-400 hover:bg-[#1B4630]'
+                      ? 'bg-[#1A1A1A] text-gray-400 hover:bg-[#2A2A2A]'
                       : 'bg-white text-gray-500 hover:bg-gray-100'
                   }`}
                   aria-label={t('chat_bookmarks_delete')}

@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/koretex-ai/local-browser-use.git"
+    "url": "https://github.com/koretex-ai/koretex-browser-agent.git"
   },
   "type": "module",
   "scripts": {

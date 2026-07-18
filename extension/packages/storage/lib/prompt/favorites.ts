@@ -2,11 +2,14 @@ import { StorageEnum } from '../base/enums';
 import { createStorage } from '../base/base';
 import type { BaseStorage } from '../base/types';
 
-// Exact contents of the Nanobrowser-era defaults, removed by migration on load
+// Exact contents of outdated defaults (Nanobrowser-era + our own stale repo
+// link), removed by migration on load
 const legacyDefaultContents = [
   '- Go to https://huggingface.co/papers and click through each of the first 3 papers.\n- For each paper:\n  - Record the title, URL and upvotes\n  - Summarise the abstract section\n- Finally, compile together a summary of all 3 papers, ranked by upvotes',
   'Follow us at https://x.com/nanobrowser_ai to stay updated on the latest news and features!',
   "Open the Nanobrowser repository at https://github.com/nanobrowser/nanobrowser and check if you've already starred it. If not, please support us by giving us a star!",
+  "Open the Local Browser Use repository at https://github.com/koretex-ai/local-browser-use and check if you've already starred it. If not, please support us by giving us a star!",
+  "Open our repository at https://github.com/koretex-ai/browser-use and check if you've already starred it. If not, please support us by giving us a star!",
 ];
 
 // Template data
@@ -18,7 +21,7 @@ const defaultFavoritePrompts = [
   {
     title: '🌟 Star us on GitHub!',
     content:
-      "Open the Local Browser Use repository at https://github.com/koretex-ai/local-browser-use and check if you've already starred it. If not, please support us by giving us a star!",
+      "Open the Koretex browser agent repository at https://github.com/koretex-ai/koretex-browser-agent and check if you've already starred it. If not, please support us by giving us a star!",
   },
 ];
 

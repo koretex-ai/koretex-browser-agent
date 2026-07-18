@@ -1,7 +1,7 @@
 import { chatSettingsStore } from '@extension/storage';
 import { createLogger } from '../log';
 import { fetchWithTimeout, withTimeout } from '../net';
-import { scrubPii } from './pii';
+import { scrubPii, piiVaultSize } from './pii';
 
 const logger = createLogger('orchestrator');
 
@@ -197,8 +197,9 @@ The RUNTIME appends every collected item below the optional "text" (a header lin
 - "text" must NEVER carry data rows or placeholder/template rows ("Article 1\\tSource 1"...) — the runtime does NOT fill templates; placeholders land on the page literally (a sheet came out full of "Article 3 / Source 3").
 - Hand-typing the real items into "text" is equally wrong: your journal view of them is TRUNCATED — hand-typed data comes out cut mid-word and duplicated, while the collection held every item complete.
 Have harvest/extract/collect record each item ALREADY IN THE FORM it should appear at the destination (tab-separated only where tabs are meaningful, e.g. a spreadsheet grid).
+The collection is INTERNAL runtime state, not something on the page — the journal already shows every recorded item and the running total. Never spend a step extracting or re-reading the page to "verify the collection"; extract reads the PAGE, and on many sites returns garbled text that only muddies what the collection holds cleanly.
 
-Canvas-rendered editors (e.g. Google Docs/Sheets) render input literally, not as markup — type into them with type_focused (they focus themselves when opened; clicking around first can steal focus). type_focused INSERTS at the focus — it does NOT clear existing content; if a failed earlier attempt left partial content behind, restore a clean state first (in a text editor: select-all then retype; in a grid: select the cells and delete — never select-all in a grid, it selects cells, not text).`;
+Canvas-rendered editors (e.g. Google Docs/Sheets) render input literally, not as markup — type into them with type_focused (they focus themselves when opened; clicking around first can steal focus). type_focused INSERTS at the focus — it does NOT clear existing content; if the editor/composer already holds content you did not intend this turn — a failed earlier attempt, or a leftover draft from a previous session (recurring runs revisit the same pages) — restore a clean state first (in a text editor: select-all then retype; in a grid: select the cells and delete — never select-all in a grid, it selects cells, not text). Composing on top of an unnoticed draft sends doubled text.`;
 
 const NEXT_SYSTEM_PROMPT = `You are the navigator for a browser agent. You work ONE step at a time: a deterministic runtime executes each step you decide against the user's active tab, then returns to you with a fresh SCREENSHOT of the tab, a page digest, and the journal. Local models handle perception details (locating elements to click, bulk-reading page text); you make every decision.
 
@@ -225,7 +226,8 @@ Decision rules:
 - Prefer the most direct, deterministic route the web offers: a URL that encodes the query beats typing into a search box; after typing into a search box, the next step is {"do":"key","combo":"Enter"}.
 - When searching for a CLASS of things, translate the class into concrete queries that will actually match (role-class → real titles; combine the user's qualifiers). Searching for the wrong thing poisons everything downstream.
 - When an action fails, your judgment of WHY (from the screenshot) drives the fix: a different control, a different route, an unmet precondition. Never re-issue an action you have judged failed twice unchanged.
-- A step that redoes work a failed attempt may have PARTIALLY completed must first restore a clean state (select-all/clear before retyping; close a half-open dialog).
+- A step that redoes work a failed attempt may have PARTIALLY completed must first restore a clean state (select-all/clear before retyping; close a half-open dialog). The same applies to leftovers you did not create: a composer that already shows a draft on arrival must be cleared (or the draft accounted for) before typing into it.
+- EVIDENCE OF DELIVERY MUST BE FRESH — FROM THIS RUN. Pages can already show near-identical artifacts of earlier occurrences (recurring schedules, retried tasks): a message/post/row matching your objective that was already there when you arrived proves NOTHING about this run. A send/post/submit is delivered only when the screenshot shows ITS OWN result: the new item at the newest position bearing the current time, and the composer/form cleared. Text still sitting in the composer means NOT SENT — press the send control; typing alone delivers nothing.
 - TO CONFIRM whether content exists beyond the visible screenshot (a saved row, an older post), use extract — absence from the digest or a scrolled-away screenshot is not evidence of absence.
 - Never plan logging in or handling credentials — if a login wall appears, stop.
 - You are told TIME REMAINING: there is no step limit, but when only a few minutes remain, stop exploring and DELIVER the objective with the data already collected — a delivered partial beats an undelivered perfect. Deliverables that need a destination (a sheet, a doc) take several steps; budget for them.`;
@@ -278,6 +280,16 @@ export interface ReviewArgs {
   timeRemainingMin?: number;
 }
 
+// Pinned into judge-facing prompts whenever the PII vault holds tokens. The
+// guard pseudonymizes TEXT but screenshots show real values — without this
+// note the judge compares on-screen reality to the token and fails correct
+// steps (live Gmail run 2026-07-18: the correctly-typed recipient was judged
+// "wrong email" twice because the screenshot could not match ⟨email-2⟩).
+const pseudonymSection = (): string =>
+  piiVaultSize() > 0
+    ? `\n\nPSEUDONYM TOKENS IN FORCE: a local privacy guard replaced identifiers (emails, phone numbers, card numbers) with tokens like ⟨email-1⟩ in the objective and journal. Tokens never reach the page: when a step types a token, the runtime types its REAL value, and the screenshot always shows real values. A real identifier of the matching type, visible where a token was typed or expected, IS that token's value — judge such steps by type and position, never by comparing visible text against the token, and never retype or "fix" a value because it differs from the token text.`
+    : '';
+
 export async function strategicReview(
   args: ReviewArgs,
   signal: AbortSignal,
@@ -286,6 +298,7 @@ export async function strategicReview(
   const { navigatorModel } = await chatSettingsStore.getSettings();
   const content =
     `OBJECTIVE: ${args.objective}` +
+    pseudonymSection() +
     (args.timeRemainingMin !== undefined ? `\nTIME REMAINING: about ${args.timeRemainingMin} minute(s)` : '') +
     `\n\nSTUCK SIGNAL: ${args.stuckSignal}` +
     (args.activeStrategy ? `\n\nACTIVE STRATEGY (already in force — it has NOT worked):\n${args.activeStrategy}` : '') +
@@ -352,7 +365,7 @@ export async function nextStep(
     ? `\n\nOTHER PLAYBOOKS THE USER HAS (one line each — full notes activate when you are on their site or the task matches; when one covers the objective, PREFER its site and route over improvising):\n${args.skillCatalog}`
     : '';
   const buildContent = (withScreenshot: boolean) =>
-    `OBJECTIVE: ${args.objective}${budgetLine}${strategySection}${skillsSection}${catalogSection}` +
+    `OBJECTIVE: ${args.objective}${pseudonymSection()}${budgetLine}${strategySection}${skillsSection}${catalogSection}` +
     lastSection +
     pageSection +
     (withScreenshot
@@ -497,7 +510,9 @@ export interface CallUsage {
 export type ProgressFn = (message: string) => void;
 
 /** Message content: plain text, or text + image for multimodal calls */
-type MessageContent = string | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>;
+type MessageContent =
+  | string
+  | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>;
 
 interface CallOpts {
   /** Attach a screenshot (data URL) to the user message — multimodal models only */
@@ -604,7 +619,7 @@ export async function callOrchestrator<T>(
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${orchestratorApiKey}`,
-          'HTTP-Referer': 'https://github.com/koretex-ai/browser-use',
+          'HTTP-Referer': 'https://github.com/koretex-ai/koretex-browser-agent',
           'X-Title': 'Browser Use',
         },
         body,
@@ -698,7 +713,8 @@ export async function callOrchestrator<T>(
 /** Sum two usages into one logical-call attribution (retries, repair rounds) */
 function combineUsage(a: CallUsage, b: CallUsage | null | undefined): CallUsage {
   if (!b) return a;
-  const sum = (x: number | null, y: number | null): number | null => (x === null && y === null ? null : (x ?? 0) + (y ?? 0));
+  const sum = (x: number | null, y: number | null): number | null =>
+    x === null && y === null ? null : (x ?? 0) + (y ?? 0);
   return {
     model: b.model ?? a.model,
     cost: sum(a.cost, b.cost),
@@ -847,13 +863,13 @@ export async function reportOutcome(
   return { answer: value.answer, usage };
 }
 
-// ---- DISTILL (teach-by-demonstration → skill draft) ----
-// The user demonstrated a task by hand while the extension recorded a
-// semantic event log; this call turns demonstration + notes into a SKILL —
-// a playbook the navigator reads as a prior, never a replayable macro.
-const DISTILL_SYSTEM_PROMPT = `You are distilling a user's hand-performed browser demonstration into a SKILL for a browser agent. A skill is a short playbook of site knowledge the agent reads as a STRONG PRIOR while working — the agent still judges every step from the live page, so a skill teaches routes, traps, and expectations; it is NEVER a literal macro.
+// ---- DISTILL (recorded steps → skill draft) ----
+// Turns a record of a task being performed — a hand demonstration the user
+// recorded, or the journal of a successful agent run — plus notes into a
+// SKILL: a playbook the navigator reads as a prior, never a replayable macro.
+const DISTILL_SYSTEM_PROMPT = `You are distilling a record of a browser task being performed successfully into a SKILL for a browser agent. The record is either a user's hand-performed demonstration or the step journal of the agent's own successful run — either way it shows a working route to the objective. A skill is a short playbook of site knowledge the agent reads as a STRONG PRIOR while working — the agent still judges every step from the live page, so a skill teaches routes, traps, and expectations; it is NEVER a literal macro.
 
-You get the DEMONSTRATION (a chronological event log: navigations with URLs, clicks with element descriptions, typed text, key presses), the user's NOTES (typed while demonstrating — these carry the WHY and outrank your inferences), and possibly INTERVIEW ANSWERS from a previous round.
+You get the RECORD (a chronological log: navigations with URLs, clicks with element descriptions, typed text, key presses, and — for agent runs — step judgments including failed attempts, which reveal the traps), the user's NOTES (these carry the WHY and outrank your inferences), and possibly INTERVIEW ANSWERS from a previous round. If the record contains failed or retried steps, distill the route that WORKED and note the trap that caused the failures.
 
 Write the playbook the way an expert would brief a colleague:
 - The FIRST LINE must state the skill's PURPOSE: what it accomplishes and when to reach for it, naming the site (e.g. "Find top-performing new Solana tokens on birdeye.so."). This line doubles as the skill's entry in a catalog the agent always sees — it is how the skill gets FOUND, so it must describe the goal, never a mid-flow detail.
@@ -884,6 +900,8 @@ export interface TeachInput {
   notes: string[];
   qa: { question: string; answer: string }[];
   priorDraft?: SkillDraft;
+  /** Where the record came from: a hand demonstration (default) or a successful agent run */
+  origin?: 'demo' | 'run';
 }
 
 export async function distillSkill(
@@ -895,9 +913,11 @@ export async function distillSkill(
   // reasoning ON and fast-host routing — the default orchestrator path
   // (reasoning-heavy, unrouted) made distilling visibly slow in live use
   const { navigatorModel } = await chatSettingsStore.getSettings();
+  const recordLabel =
+    input.origin === 'run' ? 'RECORD (journal of a successful agent run, chronological)' : 'RECORD (chronological)';
   const content =
-    `DEMONSTRATION (chronological):\n${input.events.join('\n') || '(no events were recorded)'}` +
-    (input.notes.length ? `\n\nNOTES from the user while demonstrating:\n${input.notes.join('\n')}` : '') +
+    `${recordLabel}:\n${input.events.join('\n') || '(no events were recorded)'}` +
+    (input.notes.length ? `\n\nNOTES from the user:\n${input.notes.join('\n')}` : '') +
     (input.priorDraft
       ? `\n\nPREVIOUS DRAFT (refine this using the interview answers):\n${JSON.stringify(input.priorDraft)}`
       : '') +

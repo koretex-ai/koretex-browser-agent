@@ -8,10 +8,10 @@ const Options = () => {
   const isDarkMode = true;
 
   return (
-    <div className="flex min-h-screen justify-center bg-[#0A150F] text-gray-200">
-      <main className="m-8 w-full max-w-xl rounded-xl border border-[#1F7A4A]/40 bg-[#0E1D14]/80 p-8 backdrop-blur-sm">
+    <div className="flex min-h-screen justify-center bg-[#000000] text-gray-200">
+      <main className="m-8 w-full max-w-xl rounded-xl border border-[#3D3D3D]/40 bg-[#0A0A0A]/80 p-8 backdrop-blur-sm">
         <h1 className="mb-6 flex items-center gap-3 text-xl font-bold text-gray-200">
-          <img src="/icon-128.png" alt="Local Browser Use" className="size-8 rounded" />
+          <img src="/icon-128.png" alt="Koretex Browser Agent" className="size-8 rounded" />
           Settings
         </h1>
         <ModelSettings isDarkMode={isDarkMode} />

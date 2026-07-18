@@ -4,6 +4,7 @@ import { handleCommand } from './commands';
 import { runAgentTask } from './agent/loop';
 import { streamChatReply } from './agent/chat';
 import { handleTeachMessage } from './recorder/teach';
+import { initSchedules, setUserTaskProbe, cancelScheduledRun } from './schedules';
 
 const logger = createLogger('background');
 
@@ -17,6 +18,10 @@ let teachAbort: AbortController | null = null;
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(error => console.error(error));
 
 logger.info('background loaded');
+
+// Recurring user schedules: alarms fire agent runs even with the panel closed
+setUserTaskProbe(() => currentAbort !== null);
+initSchedules();
 
 // Setup connection listener for long-lived connections (e.g., side panel)
 chrome.runtime.onConnect.addListener(port => {
@@ -46,6 +51,8 @@ chrome.runtime.onConnect.addListener(port => {
           logger.info(message.type, message.taskId, message.tabId, message.task);
 
           currentAbort?.abort();
+          // The user's task takes the tab — never let a scheduled run share it
+          cancelScheduledRun();
           const abort = new AbortController();
           currentAbort = abort;
           try {
@@ -82,6 +89,7 @@ chrome.runtime.onConnect.addListener(port => {
           break;
         }
 
+        case 'skillify_start':
         case 'teach_start':
         case 'teach_note':
         case 'teach_stop':

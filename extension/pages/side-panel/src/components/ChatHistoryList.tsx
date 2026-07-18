@@ -40,7 +40,7 @@ const ChatHistoryList: React.FC<ChatHistoryListProps> = ({
       </h2>
       {sessions.length === 0 ? (
         <div
-          className={`rounded-lg ${isDarkMode ? 'bg-[#0E1D14] text-gray-400' : 'bg-white/30 text-gray-500'} p-4 text-center backdrop-blur-sm`}>
+          className={`rounded-lg ${isDarkMode ? 'bg-[#0A0A0A] text-gray-400' : 'bg-white/30 text-gray-500'} p-4 text-center backdrop-blur-sm`}>
           {t('chat_history_empty')}
         </div>
       ) : (
@@ -49,7 +49,7 @@ const ChatHistoryList: React.FC<ChatHistoryListProps> = ({
             <div
               key={session.id}
               className={`group relative rounded-lg ${
-                isDarkMode ? 'bg-[#0E1D14] hover:bg-[#143122]' : 'bg-white/50 hover:bg-white/70'
+                isDarkMode ? 'bg-[#0A0A0A] hover:bg-[#1A1A1A]' : 'bg-white/50 hover:bg-white/70'
               } p-3 backdrop-blur-sm transition-all`}>
               <button onClick={() => onSessionSelect(session.id)} className="w-full text-left" type="button">
                 <h3 className={`text-sm font-medium ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>
@@ -69,7 +69,7 @@ const ChatHistoryList: React.FC<ChatHistoryListProps> = ({
                   }}
                   className={`absolute right-2 top-2 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 ${
                     isDarkMode
-                      ? 'bg-[#143122] text-[#2BE87D] hover:bg-[#1B4630]'
+                      ? 'bg-[#1A1A1A] text-[#E8E8E8] hover:bg-[#2A2A2A]'
                       : 'bg-white text-sky-500 hover:bg-gray-100'
                   }`}
                   aria-label={t('chat_history_bookmark')}
@@ -86,7 +86,7 @@ const ChatHistoryList: React.FC<ChatHistoryListProps> = ({
                 }}
                 className={`absolute bottom-2 right-2 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 ${
                   isDarkMode
-                    ? 'bg-[#143122] text-gray-400 hover:bg-[#1B4630]'
+                    ? 'bg-[#1A1A1A] text-gray-400 hover:bg-[#2A2A2A]'
                     : 'bg-white text-gray-500 hover:bg-gray-100'
                 }`}
                 aria-label={t('chat_history_delete')}

@@ -129,7 +129,16 @@ export function extractInteractiveElements(showHighlights: boolean): ExtractedPa
         tag: el.tagName.toLowerCase(),
         role: el.getAttribute('role') || (el as HTMLInputElement).type || '',
         text: getLabel(el),
-        placeholder: el.getAttribute('placeholder') || '',
+        // Rich contenteditable composers carry their placeholder in
+        // aria-placeholder (WhatsApp) or data-placeholder (Quill, Draft.js) —
+        // without these the composer digests as an anonymous <div:textbox>
+        // that no target description can match (live WhatsApp failure
+        // 2026-07-18: "Type a message" unmatchable, 8 wasted steps)
+        placeholder:
+          el.getAttribute('placeholder') ||
+          el.getAttribute('aria-placeholder') ||
+          el.getAttribute('data-placeholder') ||
+          '',
         value: (el as HTMLInputElement).value || '',
         href: (el as HTMLAnchorElement).href || '',
         rect: {
@@ -309,24 +318,39 @@ export function clickElementByIndex(index: number): { ok: boolean; error?: strin
   const rect = el.getBoundingClientRect();
   const cx = rect.left + rect.width / 2;
   const cy = rect.top + rect.height / 2;
-  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
-    el.dispatchEvent(
-      new MouseEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        view: window,
-        clientX: cx,
-        clientY: cy,
-      }),
-    );
+
+  // Dispatch at the DEEPEST node under the element's center, like a real
+  // click — apps with delegated handlers key off the deep target, and events
+  // dispatched at a wrapper never reach a listener registered on its child.
+  // (WhatsApp chat rows silently ignored ancestor-dispatched clicks — live
+  // runs 2026-07-18.) Only trust the hit if it is inside the element;
+  // otherwise something overlays it and the registered element stays target.
+  let deep = document.elementFromPoint(cx, cy);
+  while (deep?.shadowRoot) {
+    const inner = deep.shadowRoot.elementFromPoint(cx, cy);
+    if (!inner || inner === deep) break;
+    deep = inner;
   }
-  el.click();
+  const target: HTMLElement = deep instanceof HTMLElement && el.contains(deep) ? deep : el;
+
+  const base = { bubbles: true, cancelable: true, composed: true, view: window, clientX: cx, clientY: cy, detail: 1 };
+  const pointer = { pointerId: 1, pointerType: 'mouse', isPrimary: true };
+  target.dispatchEvent(new PointerEvent('pointerdown', { ...base, ...pointer, button: 0, buttons: 1 }));
+  target.dispatchEvent(new MouseEvent('mousedown', { ...base, button: 0, buttons: 1 }));
+  // Untrusted mousedown does not focus — do what the real one would
+  el.focus?.({ preventScroll: true });
+  target.dispatchEvent(new PointerEvent('pointerup', { ...base, ...pointer, button: 0, buttons: 0 }));
+  target.dispatchEvent(new MouseEvent('mouseup', { ...base, button: 0, buttons: 0 }));
+  // ONE click, dispatched at the deep target so it bubbles through every
+  // handler on the path; activation behavior (links, buttons) still runs on
+  // the nearest activatable ancestor. Never ALSO call el.click() — a second
+  // click event double-toggles checkboxes and menus.
+  target.dispatchEvent(new MouseEvent('click', { ...base, button: 0, buttons: 0 }));
   return { ok: true, recovered };
 }
 
 // Type text into the element registered at the given index
-export function typeIntoElement(index: number, text: string): { ok: boolean; error?: string } {
+export async function typeIntoElement(index: number, text: string): Promise<{ ok: boolean; error?: string }> {
   const win = window as any;
   const el: HTMLElement | undefined = win.__lbu?.elements?.[index];
   if (!el || !el.isConnected)
@@ -346,8 +370,10 @@ export function typeIntoElement(index: number, text: string): { ok: boolean; err
   }
 
   if (el.isContentEditable) {
-    // Rich-text editors (LinkedIn, Quill, ProseMirror) ignore textContent
-    // writes — they need real editing commands that fire beforeinput/input
+    // Rich-text editors (LinkedIn, Quill, ProseMirror, WhatsApp's Lexical)
+    // ignore textContent writes — they need real editing commands that fire
+    // beforeinput/input. Selecting the contents first makes insertText a
+    // REPLACE, which is this action's contract.
     const selection = window.getSelection();
     if (selection) {
       const range = document.createRange();
@@ -356,14 +382,57 @@ export function typeIntoElement(index: number, text: string): { ok: boolean; err
       selection.addRange(range);
     }
     const inserted = document.execCommand('insertText', false, text);
+    // Safety net for editors that silently ignore execCommand — but ONLY
+    // after letting the editor re-render. Frameworks like Lexical apply the
+    // insert asynchronously, so an immediate textContent read shows '' even
+    // when the insert landed; the old synchronous check then inserted a
+    // second copy (live WhatsApp failure 2026-07-18: "good morninggood
+    // morning" from one type step).
     if (!inserted || (el.textContent ?? '').trim() === '') {
-      el.textContent = text;
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+      await new Promise(resolve => setTimeout(resolve, 200));
+      if ((el.textContent ?? '').trim() === '') {
+        el.textContent = text;
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+      }
     }
     return { ok: true };
   }
 
   return { ok: false, error: `Element at index ${index} is not editable (<${el.tagName.toLowerCase()}>)` };
+}
+
+// Clear whatever editable currently has keyboard focus — scoped to the
+// FOCUSED element only (an input's value or a contenteditable's contents),
+// never a page-level select-all, so a spreadsheet grid can never be caught
+// by it. Used by the targeted-type vision fallback so `type` keeps its
+// replace semantics even when the field is a rich composer.
+export function clearFocusedEditable(): { cleared: boolean } {
+  const el = document.activeElement as HTMLElement | null;
+  if (!el) return { cleared: false };
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    if (el.value !== '') {
+      const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      if (setter) setter.call(el, '');
+      else el.value = '';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    return { cleared: true };
+  }
+  if (el.isContentEditable) {
+    if ((el.textContent ?? '').trim() !== '') {
+      const selection = window.getSelection();
+      if (selection) {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      document.execCommand('delete', false);
+    }
+    return { cleared: true };
+  }
+  return { cleared: false };
 }
 
 // Click at a point in viewport CSS coordinates (vision-grounded click).
@@ -397,19 +466,24 @@ export function clickAtPoint(x: number, y: number): { ok: boolean; error?: strin
     if (node instanceof ShadowRoot) node = node.host;
   }
 
-  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
-    el.dispatchEvent(
-      new MouseEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        view: window,
-        clientX: x,
-        clientY: y,
-      }),
-    );
-  }
-  el.click?.();
+  // Dispatch at the DEEPEST hit node, like a real click — apps with
+  // delegated handlers key off the deep target, and events dispatched at the
+  // interactive ancestor never reach a listener on its child (WhatsApp chat
+  // rows silently ignored ancestor-dispatched clicks — live runs 2026-07-18).
+  // `el` (the interactive ancestor) is still what gets focused and reported.
+  const target = hitNode instanceof HTMLElement ? hitNode : el;
+  const base = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, detail: 1 };
+  const pointer = { pointerId: 1, pointerType: 'mouse', isPrimary: true };
+  target.dispatchEvent(new PointerEvent('pointerdown', { ...base, ...pointer, button: 0, buttons: 1 }));
+  target.dispatchEvent(new MouseEvent('mousedown', { ...base, button: 0, buttons: 1 }));
+  // Untrusted mousedown does not focus — do what the real one would
+  el.focus?.({ preventScroll: true });
+  target.dispatchEvent(new PointerEvent('pointerup', { ...base, ...pointer, button: 0, buttons: 0 }));
+  target.dispatchEvent(new MouseEvent('mouseup', { ...base, button: 0, buttons: 0 }));
+  // ONE click at the deep target (activation still runs on the nearest
+  // activatable ancestor); never also el.click() — two click events
+  // double-toggle checkboxes and menus.
+  target.dispatchEvent(new MouseEvent('click', { ...base, button: 0, buttons: 0 }));
   const label = (el.getAttribute('aria-label') || el.innerText || el.textContent || '')
     .trim()
     .replace(/\s+/g, ' ')

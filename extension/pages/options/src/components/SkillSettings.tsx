@@ -1,27 +1,49 @@
 import { useState, useEffect, useRef } from 'react';
-import { skillStore } from '@extension/storage';
+import { skillStore, BUILT_IN_SKILLS } from '@extension/storage';
 import type { CustomSkillRecord } from '@extension/storage';
 
 interface SkillSettingsProps {
   isDarkMode?: boolean;
 }
 
-/** Editable draft of a skill — hosts as one comma-separated string */
+/**
+ * Editable draft of a skill — hosts as one comma-separated string.
+ * Built-in playbooks appear as drafts too: a pristine built-in is shown
+ * read-from-code and never persisted; the moment it's edited it becomes an
+ * OVERRIDE (saved to skillStore under the same name, which replaces the
+ * built-in at runtime). "Restore built-in" drops the override.
+ */
 interface SkillDraft {
   name: string;
   hosts: string;
   intent: string;
   guidance: string;
+  builtIn: boolean;
+  /** Built-in only: true when a stored override exists (or the draft was edited) */
+  overridden: boolean;
 }
 
-const BUILT_IN_NAMES = ['google-sheets', 'google-docs', 'x.com', 'linkedin'];
+const builtInByName = new Map(BUILT_IN_SKILLS.map(def => [def.name, def]));
 
-const toDraft = (record: CustomSkillRecord): SkillDraft => ({
+const toDraft = (record: Pick<CustomSkillRecord, 'name' | 'hosts' | 'intent' | 'guidance'>): SkillDraft => ({
   name: record.name,
   hosts: record.hosts.join(', '),
   intent: record.intent ?? '',
   guidance: record.guidance,
+  builtIn: builtInByName.has(record.name),
+  overridden: false,
 });
+
+/** Built-ins first (with their stored override, if any), then the user's own skills. */
+const buildDrafts = (records: CustomSkillRecord[]): SkillDraft[] => {
+  const recordByName = new Map(records.map(record => [record.name, record]));
+  const builtIns = BUILT_IN_SKILLS.map(def => {
+    const override = recordByName.get(def.name);
+    return override ? { ...toDraft(override), overridden: true } : toDraft(def);
+  });
+  const customs = records.filter(record => !builtInByName.has(record.name)).map(toDraft);
+  return [...builtIns, ...customs];
+};
 
 const fromDraft = (draft: SkillDraft): Omit<CustomSkillRecord, 'createdAt' | 'updatedAt'> | null => {
   const name = draft.name.trim();
@@ -46,18 +68,35 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    skillStore.getAll().then(records => setDrafts(records.map(toDraft)));
+    skillStore.getAll().then(records => setDrafts(buildDrafts(records)));
   }, []);
 
+  // Editing a pristine built-in turns it into an override draft
   const updateDraft = (index: number, patch: Partial<SkillDraft>) => {
-    setDrafts(prev => prev.map((draft, i) => (i === index ? { ...draft, ...patch } : draft)));
+    setDrafts(prev =>
+      prev.map((draft, i) => (i === index ? { ...draft, ...patch, overridden: draft.builtIn || draft.overridden } : draft)),
+    );
+  };
+
+  const restoreBuiltIn = (index: number) => {
+    setDrafts(prev =>
+      prev.map((draft, i) => {
+        if (i !== index) return draft;
+        const def = builtInByName.get(draft.name);
+        return def ? toDraft(def) : draft;
+      }),
+    );
   };
 
   const handleSave = async () => {
     setError('');
     const records: CustomSkillRecord[] = [];
     const seen = new Set<string>();
+    // Preserve bookkeeping (createdAt, taught-skill source) across saves
+    const existingByName = new Map((await skillStore.getAll()).map(record => [record.name, record]));
     for (const draft of drafts) {
+      // A pristine built-in lives in code, not storage — nothing to persist
+      if (draft.builtIn && !draft.overridden) continue;
       const record = fromDraft(draft);
       if (!record) {
         if (draft.name.trim() || draft.guidance.trim()) {
@@ -80,10 +119,16 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
       }
       seen.add(record.name);
       const now = Date.now();
-      records.push({ ...record, createdAt: now, updatedAt: now });
+      const existing = existingByName.get(record.name);
+      records.push({
+        ...record,
+        source: existing?.source,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      });
     }
     await skillStore.replaceAll(records);
-    setDrafts(records.map(toDraft));
+    setDrafts(buildDrafts(records));
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -121,7 +166,7 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
       const incomingNames = new Set(incoming.map(skill => skill.name));
       const merged = [...existing.filter(skill => !incomingNames.has(skill.name)), ...incoming];
       await skillStore.replaceAll(merged);
-      setDrafts(merged.map(toDraft));
+      setDrafts(buildDrafts(merged));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (cause) {
@@ -130,35 +175,46 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
   };
 
   const inputClass = `w-full rounded-md border p-2 text-sm ${
-    isDarkMode ? 'border-[#1F7A4A]/50 bg-[#12251A] text-gray-200' : 'border-gray-300 bg-white text-gray-800'
+    isDarkMode ? 'border-[#3D3D3D]/50 bg-[#141414] text-gray-200' : 'border-gray-300 bg-white text-gray-800'
   }`;
   const labelClass = `mb-1 block text-xs font-medium ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`;
   const smallButtonClass = `rounded-md border px-2 py-1 text-xs transition-colors ${
-    isDarkMode ? 'border-[#1F7A4A]/50 text-gray-400 hover:text-gray-200' : 'border-gray-300 text-gray-500 hover:text-gray-700'
+    isDarkMode ? 'border-[#3D3D3D]/50 text-gray-400 hover:text-gray-200' : 'border-gray-300 text-gray-500 hover:text-gray-700'
+  }`;
+  const badgeClass = `rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
+    isDarkMode ? 'border-[#3D3D3D]/60 text-[#E8E8E8]' : 'border-gray-300 text-gray-500'
+  }`;
+  const editedBadgeClass = `rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
+    isDarkMode ? 'border-amber-500/60 text-amber-400' : 'border-amber-400 text-amber-600'
   }`;
 
   return (
-    <div className={`border-t pt-6 ${isDarkMode ? 'border-[#1F7A4A]/40' : 'border-gray-200'}`}>
+    <div className={`border-t pt-6 ${isDarkMode ? 'border-[#3D3D3D]/40' : 'border-gray-200'}`}>
       <h2 className={`mb-1 text-lg font-semibold ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
         Site playbooks (skills)
       </h2>
       <p className={`mb-4 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
         A skill teaches the agent how a site actually works: the direct route to common operations and the traps to
-        avoid. It is advice, not a script — the agent still judges every step from the live page. Built-in playbooks:{' '}
-        {BUILT_IN_NAMES.join(', ')}. A skill you create with the same name replaces the built-in one.
+        avoid. It is advice, not a script — the agent still judges every step from the live page. Built-in playbooks
+        ship with the extension and are marked below; you can edit them like any other skill — your edit is saved as a
+        local override, and &quot;Restore built-in&quot; returns to the shipped version.
       </p>
 
       <div className="space-y-2">
         {drafts.map((draft, index) => (
           <div
             key={index}
-            className={`rounded-lg border ${isDarkMode ? 'border-[#1F7A4A]/40 bg-[#0C1911]' : 'border-gray-200 bg-gray-50'}`}>
+            className={`rounded-lg border ${isDarkMode ? 'border-[#3D3D3D]/40 bg-[#0F0F0F]' : 'border-gray-200 bg-gray-50'}`}>
             <button
               type="button"
               onClick={() => setExpandedIndex(expandedIndex === index ? null : index)}
               className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left">
-              <span className={`truncate text-sm font-medium ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                {draft.name || '(unnamed skill)'}
+              <span className="flex min-w-0 items-center gap-2">
+                <span className={`truncate text-sm font-medium ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                  {draft.name || '(unnamed skill)'}
+                </span>
+                {draft.builtIn && <span className={badgeClass}>built-in</span>}
+                {draft.builtIn && draft.overridden && <span className={editedBadgeClass}>edited</span>}
               </span>
               <span className={`flex shrink-0 items-center gap-2 text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                 {draft.hosts && <span className="max-w-[220px] truncate">{draft.hosts}</span>}
@@ -166,15 +222,18 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
               </span>
             </button>
             {expandedIndex === index && (
-              <div className={`border-t p-3 ${isDarkMode ? 'border-[#1F7A4A]/30' : 'border-gray-200'}`}>
+              <div className={`border-t p-3 ${isDarkMode ? 'border-[#3D3D3D]/30' : 'border-gray-200'}`}>
                 <div className="mb-2">
-                  <label className={labelClass}>Name</label>
+                  <label className={labelClass}>
+                    Name{draft.builtIn && ' (fixed — this is what ties your edit to the built-in it replaces)'}
+                  </label>
                   <input
                     type="text"
                     value={draft.name}
                     onChange={e => updateDraft(index, { name: e.target.value })}
                     placeholder="e.g. notion"
-                    className={inputClass}
+                    disabled={draft.builtIn}
+                    className={`${inputClass} ${draft.builtIn ? 'opacity-60' : ''}`}
                   />
                 </div>
                 <div className="mb-2">
@@ -208,20 +267,32 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
                   <textarea
                     value={draft.guidance}
                     onChange={e => updateDraft(index, { guidance: e.target.value })}
-                    rows={5}
+                    rows={draft.builtIn ? 10 : 5}
                     placeholder={'Find X on site.com — use when the user asks for X.\nStart at https://...\nNever click ... — use ... instead.'}
                     className={inputClass}
                   />
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDrafts(prev => prev.filter((_, i) => i !== index));
-                    setExpandedIndex(null);
-                  }}
-                  className={smallButtonClass}>
-                  Delete skill
-                </button>
+                {draft.builtIn ? (
+                  draft.overridden ? (
+                    <button type="button" onClick={() => restoreBuiltIn(index)} className={smallButtonClass}>
+                      Restore built-in
+                    </button>
+                  ) : (
+                    <p className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                      Shipped with the extension — editing any field saves your version as a local override.
+                    </p>
+                  )
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDrafts(prev => prev.filter((_, i) => i !== index));
+                      setExpandedIndex(null);
+                    }}
+                    className={smallButtonClass}>
+                    Delete skill
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -232,7 +303,7 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
         <button
           type="button"
           onClick={() => {
-            setDrafts(prev => [...prev, { name: '', hosts: '', intent: '', guidance: '' }]);
+            setDrafts(prev => [...prev, { name: '', hosts: '', intent: '', guidance: '', builtIn: false, overridden: false }]);
             setExpandedIndex(drafts.length);
           }}
           className={smallButtonClass}>
@@ -241,7 +312,7 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
         <button
           type="button"
           onClick={handleSave}
-          className="rounded-md bg-[#2BE87D] px-3 py-1 text-sm font-medium text-[#06130C] transition-colors hover:bg-[#59F09C]">
+          className="rounded-md bg-[#E8E8E8] px-3 py-1 text-sm font-medium text-[#000000] transition-colors hover:bg-[#FFFFFF]">
           Save skills
         </button>
         <button type="button" onClick={handleExport} className={smallButtonClass}>
@@ -261,7 +332,7 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
             e.target.value = '';
           }}
         />
-        {saved && <span className="text-sm text-[#2BE87D]">Saved</span>}
+        {saved && <span className="text-sm text-[#E8E8E8]">Saved</span>}
       </div>
       {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
     </div>

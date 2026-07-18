@@ -1,7 +1,8 @@
 import type { PerceptionSnapshot } from '@extension/storage';
 import { trajectoryStore } from '@extension/storage';
 import { createLogger } from '../log';
-import { capturePageState, capturePageText } from '../perception';
+import { capturePageState, capturePageText, runInPage } from '../perception';
+import { clearFocusedEditable } from '../perception/pageScript';
 import { executeAction } from '../actions/executor';
 import { extractFromPage, LOCAL_ENDPOINT } from './planner';
 import type { PlannerEndpoint } from './planner';
@@ -103,8 +104,19 @@ export function resolveTargetDetail(state: PerceptionSnapshot, target: string): 
     let score = 0;
     if (label === wanted) {
       score = 1;
-    } else if (label.includes(wanted) || wanted.includes(label)) {
-      score = (0.9 * Math.min(label.length, wanted.length)) / Math.max(label.length, wanted.length);
+    } else if (label.includes(wanted)) {
+      // The WHOLE wanted phrase appears inside the label. For a multi-word
+      // phrase that is near-certain — labels routinely append context the
+      // description omits ("Type a message" vs "Type a message to group
+      // Koretex < … >"), and the raw length ratio sank exactly that match
+      // below the cutoff (live WhatsApp failure 2026-07-18, element [49]).
+      // Single tokens keep the ratio: "search" inside a long label is weak.
+      const ratio = (0.9 * wanted.length) / label.length;
+      score = wantedTokens.size >= 2 ? Math.max(ratio, 0.85) : ratio;
+    } else if (wanted.includes(label)) {
+      // The label is a fragment of the description — weaker: score by how
+      // much of the description the label accounts for
+      score = (0.9 * label.length) / wanted.length;
     } else {
       const labelTokens = new Set(label.split(' '));
       let common = 0;
@@ -435,6 +447,12 @@ export function createStepRunner(
           );
           if (!focus.ok) return { ok: false, message: `could not focus "${step.target}": ${focus.message}` };
           await sleep(400);
+          // `type` promises REPLACE semantics, but type_focused is insert-only
+          // (the Sheets select-all trap). Clear the now-focused field first —
+          // scoped to the focused editable itself, so a grid can never be hit.
+          // Without this, a retry into a rich composer APPENDS (live WhatsApp
+          // failure 2026-07-18: "good morning" snowballed to 8 copies).
+          await runInPage(tabId, clearFocusedEditable).catch(() => {});
           return executeAction(tabId, taskId, { type: 'type_focused', text }, lastState, logContextFor(step));
         } catch (error) {
           if (signal.aborted) throw error;

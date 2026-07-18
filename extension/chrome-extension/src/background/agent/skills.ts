@@ -9,8 +9,11 @@
  * (house rule: prompts carry general reasoning directives, never
  * site-specific patches).
  *
- * Every line in these playbooks is knowledge PAID FOR by a live run — the
- * traps are real failures, the routes are what strategic reviews eventually
+ * The built-in playbook DATA lives in `@extension/storage` (builtins.ts) so
+ * the options page can render and override it; this module compiles it into
+ * runtime skills and owns all triggering/rendering logic. Every line in the
+ * built-in playbooks is knowledge PAID FOR by a live run — the traps are
+ * real failures, the routes are what strategic reviews eventually
  * discovered. Adding a skill should follow the same rule: validated
  * knowledge only, no speculation.
  *
@@ -21,6 +24,7 @@
  * rediscovering it).
  */
 
+import { BUILT_IN_SKILLS } from '@extension/storage';
 import type { CustomSkillRecord } from '@extension/storage';
 
 export interface Skill {
@@ -33,63 +37,16 @@ export interface Skill {
   guidance: string;
 }
 
-export const SKILLS: Skill[] = [
-  {
-    name: 'google-sheets',
-    hosts: ['docs.google.com/spreadsheets', 'sheets.google.com'],
-    intent: /spreadsheet|\bsheets?\b/i,
-    guidance: [
-      'Create a new spreadsheet by navigating DIRECTLY to https://docs.google.com/spreadsheets/create — never click the "Blank spreadsheet" card on the Sheets home page (its visible label is not the clickable element; those clicks miss).',
-      'The grid is a canvas: type with type_focused into the SELECTED cell. A fresh sheet opens with A1 already selected — type immediately, no click needed. Tab moves one column right; Enter commits and moves to the next row. Write multi-row data as ONE type_focused step: one line per row, tab-separated columns.',
-      'Never press select-all in the grid — it selects every CELL (the Name Box left of the formula bar shows "1:1000") and typing lands nowhere; press Escape if that happens. To clear cells, select them and press Delete.',
-      'The grid is invisible to text extraction — verify what was written from the screenshot.',
-      'Write the DATA FIRST and rename LAST. Renaming focuses the "Untitled spreadsheet" title box and it KEEPS keyboard focus until Enter commits it — a grid write right after renaming lands in the title (two live runs got a stray suffix on the title and lost their header row this way). If you must rename first: type the title, press Enter, and CHECK the title on the screenshot before typing anything else.',
-      'Data destined for a sheet must be collected as one ROW per item — each item one line with tab-separated fields ("Name<TAB>Title<TAB>Location"). Fields collected as separate items stack vertically in column A when written.',
-      'FIXING WRONG DATA: never nudge it cell by cell. Escape only cancels an in-progress edit — it NEVER deletes committed data. Clear first: select the used range (click the top-left cell, Shift+click the bottom-right used cell) and press Delete, CONFIRM the grid is empty on the screenshot, then re-type everything in ONE type_focused step.',
-    ].join('\n'),
-  },
-  {
-    name: 'google-docs',
-    hosts: ['docs.google.com/document'],
-    intent: /\bgoogle docs?\b|\bdocument\b/i,
-    guidance: [
-      'Create a new document by navigating DIRECTLY to https://docs.google.com/document/create.',
-      'Write the BODY FIRST and rename LAST. Renaming focuses the "Untitled document" title box and it KEEPS keyboard focus until Enter commits it — body text typed right after renaming lands in the title instead (live run: the first body line was appended to the title).',
-      'The page is a canvas editor: it focuses itself when opened — type_focused immediately; clicking around first can steal focus. Text renders literally (never markup). Separate fields with " — ", not tabs. The document title is the separate "Untitled document" box at the top-left, not the page body.',
-      'The canvas is invisible to text extraction — verify what was written from the screenshot.',
-    ].join('\n'),
-  },
-  {
-    name: 'x.com',
-    hosts: ['x.com/', 'twitter.com/'],
-    intent: /\bx\.com\b|\btwitter\b|\btweet\b/i,
-    guidance: [
-      'The HOME feed composer is INLINE: on a successful post it CLEARS and stays open — it never closes. Proof of posting is the "Your post was sent" toast and/or the post appearing at the top of the feed.',
-      'Composers are contenteditable: click to focus, then type_focused. Ctrl+Enter (Cmd+Enter on Mac) submits and sidesteps the ambiguous Post buttons — the nav-sidebar "Post" and the composer submit "Post" share a label; if clicking, describe the target by place ("the Post button inside the composer").',
-      'To act on an existing post (delete, etc.): open the post\'s own page, then use the ··· menu ON THE POST — not the nav sidebar "More". A deletion shows "Your post was deleted".',
-      'Page-text extraction on x.com returns garbled fragments and UI junk — capture small sets with collect (read from the screenshot) instead of extract.',
-    ].join('\n'),
-  },
-  {
-    name: 'linkedin',
-    hosts: ['linkedin.com'],
-    intent: /linkedin/i,
-    guidance: [
-      'Find people with a pre-constructed search URL instead of the search bar and filter UI: https://www.linkedin.com/search/results/people/?keywords=<role keywords>&network=%5B%22S%22%5D (network S = 2nd-degree). The URL route bypasses both the flaky search-bar clicks and the gated filters.',
-      'geoUrn IDs are opaque numbers — NEVER invent one (invented IDs resolve to random towns and return no results). Omit geoUrn and put the city name in the keywords instead, then check the location chip on the results page; only reuse a geoUrn you have actually seen in a URL.',
-      'Several search filters (Seniority among them) are Sales-Navigator-gated: the toggle visibly reverts on apply and an upsell appears. Never fight a reverting control — encode the constraint as keywords in the URL instead.',
-      'Search for concrete job titles ("Head of Data", "VP Engineering"), never class phrases like "decision maker" — literal class phrases match headline self-labelers, not the people meant.',
-    ].join('\n'),
-  },
-];
+/** The serializable fields a skill compiles from — built-in defs and stored custom records both fit. */
+type SkillRecordLike = Pick<CustomSkillRecord, 'name' | 'hosts' | 'intent' | 'guidance'>;
 
 /**
- * Compile user-defined skills (serializable records from skillStore) into
- * runtime skills. Records missing a name or guidance are skipped; an invalid
- * intent regex degrades the skill to host-only triggering rather than
- * breaking the run.
+ * Compile serializable skill records (built-in defs or skillStore records)
+ * into runtime skills. Records missing a name or guidance are skipped; an
+ * invalid intent regex degrades the skill to host-only triggering rather
+ * than breaking the run.
  */
-export function compileCustomSkills(records: CustomSkillRecord[]): Skill[] {
+export function compileCustomSkills(records: SkillRecordLike[]): Skill[] {
   const compiled: Skill[] = [];
   for (const record of records) {
     const name = (record.name ?? '').trim();
@@ -108,6 +65,9 @@ export function compileCustomSkills(records: CustomSkillRecord[]): Skill[] {
   }
   return compiled;
 }
+
+/** The shipped playbooks, compiled from the shared serializable definitions. */
+export const SKILLS: Skill[] = compileCustomSkills(BUILT_IN_SKILLS);
 
 /**
  * Built-in playbooks plus the user's custom ones. A custom skill sharing a

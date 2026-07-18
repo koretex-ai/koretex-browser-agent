@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { FiSettings } from 'react-icons/fi';
+import { FiSettings, FiClock } from 'react-icons/fi';
 import { PiPlusBold, PiGraduationCapBold } from 'react-icons/pi';
 import { GrHistory } from 'react-icons/gr';
 import { type Message, Actors, chatHistoryStore, trajectoryStore } from '@extension/storage';
@@ -9,6 +9,7 @@ import MessageList from './components/MessageList';
 import ChatInput from './components/ChatInput';
 import ChatHistoryList from './components/ChatHistoryList';
 import BookmarkList from './components/BookmarkList';
+import ScheduleList from './components/ScheduleList';
 import { EventType, type AgentEvent, ExecutionState } from './types/event';
 import './SidePanel.css';
 
@@ -27,6 +28,7 @@ const SidePanel = () => {
   const [showStopButton, setShowStopButton] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showSchedules, setShowSchedules] = useState(false);
   const [chatSessions, setChatSessions] = useState<Array<{ id: string; title: string; createdAt: number }>>([]);
   const [isFollowUpMode, setIsFollowUpMode] = useState(false);
   const [isHistoricalSession, setIsHistoricalSession] = useState(false);
@@ -37,6 +39,8 @@ const SidePanel = () => {
   const [streamingText, setStreamingText] = useState<string | null>(null);
   // Teach-by-demonstration flow: null = not teaching
   const [teachPhase, setTeachPhase] = useState<null | 'recording' | 'distilling' | 'reviewing'>(null);
+  // A task just succeeded — offer to distill the run into a skill
+  const [skillOffer, setSkillOffer] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
   const portRef = useRef<chrome.runtime.Port | null>(null);
   const heartbeatIntervalRef = useRef<number | null>(null);
@@ -75,6 +79,7 @@ const SidePanel = () => {
       switch (state) {
         case ExecutionState.TASK_START:
           setIsHistoricalSession(false);
+          setSkillOffer(false);
           setStreamingText('');
           break;
         case ExecutionState.STEP_OK:
@@ -168,11 +173,14 @@ const SidePanel = () => {
           finishTask();
         } else if (message && message.type === 'heartbeat_ack') {
           console.log('Heartbeat acknowledged');
+        } else if (message && message.type === 'skillify_offer') {
+          setSkillOffer(true);
         } else if (message && typeof message.type === 'string' && message.type.startsWith('teach_')) {
           const content = message.message ?? message.text ?? message.error ?? '';
           if (content) {
             appendMessage({
-              actor: message.type === 'teach_draft' || message.type === 'teach_saved' ? Actors.ASSISTANT : Actors.SYSTEM,
+              actor:
+                message.type === 'teach_draft' || message.type === 'teach_saved' ? Actors.ASSISTANT : Actors.SYSTEM,
               content,
               timestamp: Date.now(),
             });
@@ -509,14 +517,24 @@ const SidePanel = () => {
 
   const handleTeach = async () => {
     if (teachPhase || !inputEnabled || isHistoricalSession) return;
+    setSkillOffer(false);
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     setTeachPhase('recording');
     sendTeach({ type: 'teach_start', tabId: tabs[0]?.id });
   };
 
+  // Distill the just-finished successful run into a skill (offer button)
+  const handleSkillify = () => {
+    if (teachPhase || !inputEnabled) return;
+    setSkillOffer(false);
+    setTeachPhase('distilling');
+    sendTeach({ type: 'skillify_start' });
+  };
+
   const handleNewChat = () => {
     if (teachPhase) sendTeach({ type: 'teach_discard' });
     setTeachPhase(null);
+    setSkillOffer(false);
     // Clear messages and start a new chat
     setMessages([]);
     setCurrentSessionId(null);
@@ -697,10 +715,10 @@ const SidePanel = () => {
   }, [messages, streamingText]);
 
   const teachBar = teachPhase && (
-    <div className="mx-2 mb-1 flex items-center justify-between gap-2 rounded-md border border-[#1F7A4A]/50 bg-[#0E1D14] px-3 py-2 text-xs text-gray-300">
+    <div className="mx-2 mb-1 flex items-center justify-between gap-2 rounded-md border border-[#3D3D3D]/50 bg-[#0A0A0A] px-3 py-2 text-xs text-gray-300">
       <span>
         {teachPhase === 'recording' && '⏺ Recording your demonstration — act in the page, type notes below'}
-        {teachPhase === 'distilling' && '⏳ Distilling the skill from your demonstration…'}
+        {teachPhase === 'distilling' && '⏳ Distilling the skill…'}
         {teachPhase === 'reviewing' && '📘 Draft ready — reply below to refine it, or save'}
       </span>
       <span className="flex shrink-0 gap-2">
@@ -711,7 +729,7 @@ const SidePanel = () => {
               setTeachPhase('distilling');
               sendTeach({ type: 'teach_stop' });
             }}
-            className="rounded bg-[#2BE87D] px-2 py-0.5 font-medium text-[#06130C] hover:bg-[#59F09C]">
+            className="rounded bg-[#E8E8E8] px-2 py-0.5 font-medium text-[#000000] hover:bg-[#FFFFFF]">
             Finish
           </button>
         )}
@@ -719,7 +737,7 @@ const SidePanel = () => {
           <button
             type="button"
             onClick={() => sendTeach({ type: 'teach_save' })}
-            className="rounded bg-[#2BE87D] px-2 py-0.5 font-medium text-[#06130C] hover:bg-[#59F09C]">
+            className="rounded bg-[#E8E8E8] px-2 py-0.5 font-medium text-[#000000] hover:bg-[#FFFFFF]">
             Save skill
           </button>
         )}
@@ -730,7 +748,7 @@ const SidePanel = () => {
               setTeachPhase(null);
               sendTeach({ type: 'teach_discard' });
             }}
-            className="rounded border border-[#1F7A4A]/60 px-2 py-0.5 text-gray-400 hover:text-gray-200">
+            className="rounded border border-[#3D3D3D]/60 px-2 py-0.5 text-gray-400 hover:text-gray-200">
             Discard
           </button>
         )}
@@ -738,16 +756,38 @@ const SidePanel = () => {
     </div>
   );
 
+  // Offered after a successful run: one click starts the skill distillation
+  // interview (key objective + follow-up questions), then Save/Discard
+  const skillOfferBar = skillOffer && !teachPhase && (
+    <div className="mx-2 mb-1 flex items-center justify-between gap-2 rounded-md border border-[#3D3D3D]/50 bg-[#0A0A0A] px-3 py-2 text-xs text-gray-300">
+      <span>✨ That worked — save these steps as a skill for next time?</span>
+      <span className="flex shrink-0 gap-2">
+        <button
+          type="button"
+          onClick={handleSkillify}
+          className="rounded bg-[#E8E8E8] px-2 py-0.5 font-medium text-[#000000] hover:bg-[#FFFFFF]">
+          Save as skill
+        </button>
+        <button
+          type="button"
+          onClick={() => setSkillOffer(false)}
+          className="rounded border border-[#3D3D3D]/60 px-2 py-0.5 text-gray-400 hover:text-gray-200">
+          Dismiss
+        </button>
+      </span>
+    </div>
+  );
+
   return (
     <div>
-      <div className="flex h-screen flex-col overflow-hidden rounded-2xl border border-[#1F7A4A]/40 bg-[#0A150F]">
+      <div className="flex h-screen flex-col overflow-hidden rounded-2xl border border-[#3D3D3D]/40 bg-[#000000]">
         <header className="header relative">
           <div className="header-logo">
-            {showHistory ? (
+            {showHistory || showSchedules ? (
               <button
                 type="button"
-                onClick={() => handleBackToChat(false)}
-                className={`${isDarkMode ? 'text-[#2BE87D] hover:text-[#59F09C]' : 'text-[#2BE87D] hover:text-[#59F09C]'} cursor-pointer`}
+                onClick={() => (showSchedules ? setShowSchedules(false) : handleBackToChat(false))}
+                className={`${isDarkMode ? 'text-[#E8E8E8] hover:text-[#FFFFFF]' : 'text-[#E8E8E8] hover:text-[#FFFFFF]'} cursor-pointer`}
                 aria-label={t('nav_back_a11y')}>
                 {t('nav_back')}
               </button>
@@ -756,13 +796,13 @@ const SidePanel = () => {
             )}
           </div>
           <div className="header-icons">
-            {!showHistory && (
+            {!showHistory && !showSchedules && (
               <>
                 <button
                   type="button"
                   onClick={handleTeach}
                   onKeyDown={e => e.key === 'Enter' && handleTeach()}
-                  className={`header-icon cursor-pointer ${teachPhase ? 'opacity-40' : ''} text-[#2BE87D] hover:text-[#59F09C]`}
+                  className={`header-icon cursor-pointer ${teachPhase ? 'opacity-40' : ''} text-[#E8E8E8] hover:text-[#FFFFFF]`}
                   aria-label="Teach a skill by demonstrating it"
                   title="Teach a skill: record yourself doing a task"
                   tabIndex={0}>
@@ -772,16 +812,26 @@ const SidePanel = () => {
                   type="button"
                   onClick={handleNewChat}
                   onKeyDown={e => e.key === 'Enter' && handleNewChat()}
-                  className={`header-icon ${isDarkMode ? 'text-[#2BE87D] hover:text-[#59F09C]' : 'text-[#2BE87D] hover:text-[#59F09C]'} cursor-pointer`}
+                  className={`header-icon ${isDarkMode ? 'text-[#E8E8E8] hover:text-[#FFFFFF]' : 'text-[#E8E8E8] hover:text-[#FFFFFF]'} cursor-pointer`}
                   aria-label={t('nav_newChat_a11y')}
                   tabIndex={0}>
                   <PiPlusBold size={20} />
                 </button>
                 <button
                   type="button"
+                  onClick={() => setShowSchedules(true)}
+                  onKeyDown={e => e.key === 'Enter' && setShowSchedules(true)}
+                  className="header-icon cursor-pointer text-[#E8E8E8] hover:text-[#FFFFFF]"
+                  aria-label="Manage scheduled tasks"
+                  title="Schedules: run tasks automatically on a repeating timer"
+                  tabIndex={0}>
+                  <FiClock size={20} />
+                </button>
+                <button
+                  type="button"
                   onClick={handleLoadHistory}
                   onKeyDown={e => e.key === 'Enter' && handleLoadHistory()}
-                  className={`header-icon ${isDarkMode ? 'text-[#2BE87D] hover:text-[#59F09C]' : 'text-[#2BE87D] hover:text-[#59F09C]'} cursor-pointer`}
+                  className={`header-icon ${isDarkMode ? 'text-[#E8E8E8] hover:text-[#FFFFFF]' : 'text-[#E8E8E8] hover:text-[#FFFFFF]'} cursor-pointer`}
                   aria-label={t('nav_loadHistory_a11y')}
                   tabIndex={0}>
                   <GrHistory size={20} />
@@ -792,14 +842,18 @@ const SidePanel = () => {
               type="button"
               onClick={() => chrome.runtime.openOptionsPage()}
               onKeyDown={e => e.key === 'Enter' && chrome.runtime.openOptionsPage()}
-              className={`header-icon ${isDarkMode ? 'text-[#2BE87D] hover:text-[#59F09C]' : 'text-[#2BE87D] hover:text-[#59F09C]'} cursor-pointer`}
+              className={`header-icon ${isDarkMode ? 'text-[#E8E8E8] hover:text-[#FFFFFF]' : 'text-[#E8E8E8] hover:text-[#FFFFFF]'} cursor-pointer`}
               aria-label={t('nav_settings_a11y')}
               tabIndex={0}>
               <FiSettings size={20} />
             </button>
           </div>
         </header>
-        {showHistory ? (
+        {showSchedules ? (
+          <div className="flex-1 overflow-hidden">
+            <ScheduleList />
+          </div>
+        ) : showHistory ? (
           <div className="flex-1 overflow-hidden">
             <ChatHistoryList
               sessions={chatSessions}
@@ -816,7 +870,7 @@ const SidePanel = () => {
               <>
                 {teachBar}
                 <div
-                  className={`border-t ${isDarkMode ? 'border-[#123D2B]' : 'border-[#123D2B]'} mb-2 p-2 shadow-sm backdrop-blur-sm`}>
+                  className={`border-t ${isDarkMode ? 'border-[#333333]' : 'border-[#333333]'} mb-2 p-2 shadow-sm backdrop-blur-sm`}>
                   <ChatInput
                     onSendMessage={handleSendMessage}
                     onStopTask={handleStopTask}
@@ -842,14 +896,15 @@ const SidePanel = () => {
             )}
             {displayMessages.length > 0 && (
               <div
-                className={`scrollbar-gutter-stable flex-1 overflow-x-hidden overflow-y-scroll scroll-smooth p-2 ${isDarkMode ? 'bg-[#0A150F]/80' : ''}`}>
+                className={`scrollbar-gutter-stable flex-1 overflow-x-hidden overflow-y-scroll scroll-smooth p-2 ${isDarkMode ? 'bg-[#000000]/80' : ''}`}>
                 <MessageList messages={displayMessages} isDarkMode={isDarkMode} />
                 <div ref={messagesEndRef} />
               </div>
             )}
             {displayMessages.length > 0 && (
               <div
-                className={`border-t ${isDarkMode ? 'border-[#123D2B]' : 'border-[#123D2B]'} p-2 shadow-sm backdrop-blur-sm`}>
+                className={`border-t ${isDarkMode ? 'border-[#333333]' : 'border-[#333333]'} p-2 shadow-sm backdrop-blur-sm`}>
+                {skillOfferBar}
                 {teachBar}
                 <ChatInput
                   onSendMessage={handleSendMessage}

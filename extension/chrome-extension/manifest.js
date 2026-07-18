@@ -64,7 +64,8 @@ const manifest = withOperaSidebar(
     host_permissions: ['http://localhost/*', 'http://127.0.0.1/*', '<all_urls>'],
     // debugger: CDP escape hatch for trusted keyboard input — canvas editors
     // (Google Docs/Sheets) ignore synthetic key events (Phase 6, DESIGN.md)
-    permissions: ['storage', 'tabs', 'activeTab', 'scripting', 'unlimitedStorage', 'debugger'],
+    // alarms: recurring user schedules fire agent runs from the service worker
+    permissions: ['storage', 'tabs', 'activeTab', 'scripting', 'unlimitedStorage', 'debugger', 'alarms'],
     options_page: 'options/index.html',
     background: {
       service_worker: 'background.iife.js',

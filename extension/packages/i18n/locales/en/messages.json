@@ -1,11 +1,11 @@
 {
   "app_metadata_description": {
     "description": "Extension description",
-    "message": "Vision-native browser agent that runs fully locally via Ollama"
+    "message": "AI browser agent in a side panel — give it a task and it navigates, reads, and acts on web pages. Local and cloud model modes."
   },
   "app_metadata_name": {
     "description": "Extension name",
-    "message": "Local Browser Use"
+    "message": "Koretex Browser Agent"
   },
   "errors_unknown": {
     "message": "Unknown error occurred"

@@ -86,7 +86,7 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
   };
 
   const inputClass = `w-full rounded-md border p-2 text-sm ${
-    isDarkMode ? 'border-[#1F7A4A]/50 bg-[#12251A] text-gray-200' : 'border-gray-300 bg-white text-gray-800'
+    isDarkMode ? 'border-[#3D3D3D]/50 bg-[#141414] text-gray-200' : 'border-gray-300 bg-white text-gray-800'
   }`;
   const labelClass = `mb-1 block text-sm font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`;
 
@@ -115,7 +115,7 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
           <button
             type="button"
             onClick={() => testConnection(baseUrl.replace(/\/$/, ''))}
-            className="shrink-0 rounded-md bg-[#2BE87D] px-3 py-1 text-sm font-medium text-[#06130C] transition-colors hover:bg-[#59F09C]">
+            className="shrink-0 rounded-md bg-[#E8E8E8] px-3 py-1 text-sm font-medium text-[#000000] transition-colors hover:bg-[#FFFFFF]">
             Test
           </button>
         </div>
@@ -123,7 +123,7 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
           <p className={`mt-1 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Connecting…</p>
         )}
         {connection.state === 'ok' && (
-          <p className="mt-1 text-sm text-[#2BE87D]">
+          <p className="mt-1 text-sm text-[#E8E8E8]">
             Connected — {connection.models.length} model{connection.models.length === 1 ? '' : 's'} available
           </p>
         )}
@@ -195,7 +195,7 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
         </p>
       </div>
 
-      <div className={`border-t pt-6 ${isDarkMode ? 'border-[#1F7A4A]/40' : 'border-gray-200'}`}>
+      <div className={`border-t pt-6 ${isDarkMode ? 'border-[#3D3D3D]/40' : 'border-gray-200'}`}>
         <div className="mb-1 flex items-center justify-between">
           <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
             Cloud orchestrator
@@ -205,7 +205,7 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
               type="checkbox"
               checked={orchestratorEnabled}
               onChange={e => setOrchestratorEnabled(e.target.checked)}
-              className="size-4 accent-[#2BE87D]"
+              className="size-4 accent-[#E8E8E8]"
             />
             <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>Enabled</span>
           </label>
@@ -272,9 +272,9 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
                   onClick={() => setOrchestratorModel(preset.value)}
                   className={`rounded-md border px-2 py-1 text-xs transition-colors ${
                     orchestratorModel === preset.value
-                      ? 'border-[#2BE87D] text-[#2BE87D]'
+                      ? 'border-[#E8E8E8] text-[#E8E8E8]'
                       : isDarkMode
-                        ? 'border-[#1F7A4A]/50 text-gray-400 hover:text-gray-200'
+                        ? 'border-[#3D3D3D]/50 text-gray-400 hover:text-gray-200'
                         : 'border-gray-300 text-gray-500 hover:text-gray-700'
                   }`}>
                   {preset.label}
@@ -308,9 +308,9 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
                   onClick={() => setNavigatorModel(preset.value)}
                   className={`rounded-md border px-2 py-1 text-xs transition-colors ${
                     navigatorModel === preset.value
-                      ? 'border-[#2BE87D] text-[#2BE87D]'
+                      ? 'border-[#E8E8E8] text-[#E8E8E8]'
                       : isDarkMode
-                        ? 'border-[#1F7A4A]/50 text-gray-400 hover:text-gray-200'
+                        ? 'border-[#3D3D3D]/50 text-gray-400 hover:text-gray-200'
                         : 'border-gray-300 text-gray-500 hover:text-gray-700'
                   }`}>
                   {preset.label}
@@ -326,7 +326,7 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
         </div>
       </div>
 
-      <div className={`border-t pt-6 ${isDarkMode ? 'border-[#1F7A4A]/40' : 'border-gray-200'}`}>
+      <div className={`border-t pt-6 ${isDarkMode ? 'border-[#3D3D3D]/40' : 'border-gray-200'}`}>
         <div className="mb-1 flex items-center justify-between">
           <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
             Cloud-only mode (no local models)
@@ -336,7 +336,7 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
               type="checkbox"
               checked={cloudOnly}
               onChange={e => setCloudOnly(e.target.checked)}
-              className="size-4 accent-[#2BE87D]"
+              className="size-4 accent-[#E8E8E8]"
             />
             <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>Enabled</span>
           </label>
@@ -373,7 +373,7 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
                   type="checkbox"
                   checked={piiGuard}
                   onChange={e => setPiiGuard(e.target.checked)}
-                  className="size-4 accent-[#2BE87D]"
+                  className="size-4 accent-[#E8E8E8]"
                 />
                 <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>PII guard (recommended)</span>
               </label>
@@ -409,10 +409,10 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
         <button
           type="button"
           onClick={handleSave}
-          className="rounded-md bg-[#2BE87D] px-4 py-2 text-sm font-medium text-[#06130C] transition-colors hover:bg-[#59F09C]">
+          className="rounded-md bg-[#E8E8E8] px-4 py-2 text-sm font-medium text-[#000000] transition-colors hover:bg-[#FFFFFF]">
           Save
         </button>
-        {saved && <span className="text-sm text-[#2BE87D]">Saved</span>}
+        {saved && <span className="text-sm text-[#E8E8E8]">Saved</span>}
       </div>
     </section>
   );

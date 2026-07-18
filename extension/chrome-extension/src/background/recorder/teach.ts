@@ -35,9 +35,37 @@ interface TeachSession {
   qa: { question: string; answer: string }[];
   draft: SkillDraft | null;
   startedAt: number;
+  /** 'demo' = taught by hand; 'run' = distilled from a successful agent run */
+  origin: 'demo' | 'run';
 }
 
 let session: TeachSession | null = null;
+
+// ---- SKILLIFY (successful agent run → skill offer) ----
+// When a task run ends successfully the engine stashes its journal +
+// objective here; the side panel shows a "Save as skill" button, and
+// pressing it distills the run through the same interview/review/save flow
+// as teach-by-demonstration. chrome.storage.session (not a module variable)
+// so the offer survives MV3 service-worker restarts but not a browser exit.
+const SKILLIFY_STASH_KEY = 'lbu-skillify-last-run';
+
+export interface SuccessfulRunSnapshot {
+  objective: string;
+  journal: string[];
+  /** Playbooks that were pinned during the run (the offer only fires despite
+   * these when a strategic review proved they weren't enough) */
+  pinnedSkills?: string[];
+  finishedAt: number;
+}
+
+export async function stashSuccessfulRun(run: {
+  objective: string;
+  journal: string[];
+  pinnedSkills?: string[];
+}): Promise<void> {
+  const snapshot: SuccessfulRunSnapshot = { ...run, finishedAt: Date.now() };
+  await chrome.storage.session.set({ [SKILLIFY_STASH_KEY]: snapshot });
+}
 
 const MAX_EVENTS = 400;
 
@@ -223,9 +251,24 @@ type Post = (message: unknown) => void;
 /** UI phase implied by the current session — sent with every teach message */
 const phase = (): 'recording' | 'reviewing' | 'idle' => session?.status ?? 'idle';
 
-function renderDraftMessage(draft: SkillDraft): string {
+// The objective question is non-negotiable on the first round: the user's
+// own statement of purpose becomes the playbook's first line (and thus the
+// skill's catalog entry) — guarantee it in code even if the distiller
+// skipped it
+function ensureObjectiveQuestion(draft: SkillDraft): void {
+  const asksObjective = (draft.questions ?? []).some(q => /objective|purpose|accomplish|goal/i.test(q));
+  if (asksObjective) return;
+  draft.questions = [
+    'What is the key objective of this skill — what should it accomplish, and when should the agent use it?',
+    ...(draft.questions ?? []),
+  ].slice(0, 3);
+}
+
+function renderDraftMessage(draft: SkillDraft, origin: 'demo' | 'run'): string {
   const lines = [
-    `Here's the skill I learned from your demonstration:`,
+    origin === 'run'
+      ? `Here's the skill I distilled from that successful run:`
+      : `Here's the skill I learned from your demonstration:`,
     ``,
     `**${draft.name}**`,
     `Sites: ${draft.hosts.join(', ') || '(none — task-triggered only)'}`,
@@ -263,6 +306,7 @@ export async function handleTeachMessage(
         qa: [],
         draft: null,
         startedAt: Date.now(),
+        origin: 'demo',
       };
       // On a real page: attach now. On a chrome://newtab or similar: start
       // anyway — the navigation/tab-switch listeners attach the recorder the
@@ -287,6 +331,67 @@ export async function handleTeachMessage(
       return;
     }
 
+    case 'skillify_start': {
+      // Turn the last successful agent run into a skill draft — same
+      // interview/review/save flow as teach, seeded from the run journal
+      if (session)
+        return post({ type: 'teach_error', error: 'A teaching session is already in progress.', teachPhase: phase() });
+      const stash = await chrome.storage.session.get(SKILLIFY_STASH_KEY).catch(() => null);
+      const run = stash?.[SKILLIFY_STASH_KEY] as SuccessfulRunSnapshot | undefined;
+      if (!run?.journal?.length)
+        return post({
+          type: 'teach_error',
+          error: 'No recent successful run found to turn into a skill.',
+          teachPhase: 'idle',
+        });
+      const notes = [`The user's original task, in their own words: "${run.objective}"`];
+      if (run.pinnedSkills?.length) {
+        notes.push(
+          `Playbook(s) already pinned during this run: ${run.pinnedSkills.join(', ')}. The run needed strategy beyond them, so capture only the NEW knowledge this run paid for — and if it belongs in one of those playbooks, reuse that playbook's exact name so saving UPDATES it instead of creating a near-duplicate.`,
+        );
+      }
+      session = {
+        tabId: 0,
+        status: 'reviewing',
+        events: run.journal,
+        notes,
+        qa: [],
+        draft: null,
+        startedAt: run.finishedAt,
+        origin: 'run',
+      };
+      post({
+        type: 'teach_update',
+        text: `⏳ Distilling a skill from that run (${run.journal.length} journal line(s))…`,
+        teachPhase: 'distilling',
+      });
+      try {
+        const { result } = await distillSkill(
+          { events: session.events, notes: session.notes, qa: [], origin: 'run' },
+          signal,
+        );
+        // Always confirm the objective for a run-distilled skill: the run's
+        // task text was one concrete instance — the user says how general
+        // the skill should be
+        ensureObjectiveQuestion(result);
+        session.draft = result;
+        post({
+          type: 'teach_draft',
+          draft: result,
+          message: renderDraftMessage(result, 'run'),
+          teachPhase: 'reviewing',
+        });
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        post({
+          type: 'teach_error',
+          error: `Distilling failed: ${text}. Reply anything to retry.`,
+          teachPhase: 'reviewing',
+        });
+      }
+      return;
+    }
+
     case 'teach_note': {
       if (!session || session.status !== 'recording') return;
       const note = (message.text ?? '').trim();
@@ -298,8 +403,7 @@ export async function handleTeachMessage(
     }
 
     case 'teach_stop': {
-      if (!session)
-        return post({ type: 'teach_error', error: 'No teaching session in progress.', teachPhase: 'idle' });
+      if (!session) return post({ type: 'teach_error', error: 'No teaching session in progress.', teachPhase: 'idle' });
       chrome.tabs.onUpdated.removeListener(onTabUpdated);
       chrome.tabs.onActivated.removeListener(onTabActivated);
       await chrome.scripting
@@ -317,19 +421,14 @@ export async function handleTeachMessage(
       });
       try {
         const { result } = await distillSkill({ events: session.events, notes: session.notes, qa: [] }, signal);
-        // The objective question is non-negotiable on the first round: the
-        // user's own statement of purpose becomes the playbook's first line
-        // (and thus the skill's catalog entry) — guarantee it in code even
-        // if the distiller skipped it
-        const asksObjective = (result.questions ?? []).some(q => /objective|purpose|accomplish|goal/i.test(q));
-        if (!asksObjective && session.notes.length === 0) {
-          result.questions = [
-            'What is the key objective of this skill — what should it accomplish, and when should the agent use it?',
-            ...(result.questions ?? []),
-          ].slice(0, 3);
-        }
+        if (session.notes.length === 0) ensureObjectiveQuestion(result);
         session.draft = result;
-        post({ type: 'teach_draft', draft: result, message: renderDraftMessage(result), teachPhase: 'reviewing' });
+        post({
+          type: 'teach_draft',
+          draft: result,
+          message: renderDraftMessage(result, session.origin),
+          teachPhase: 'reviewing',
+        });
       } catch (error) {
         const text = error instanceof Error ? error.message : String(error);
         post({
@@ -355,11 +454,22 @@ export async function handleTeachMessage(
       post({ type: 'teach_update', text: 'Refining the skill with your answer…', teachPhase: 'distilling' });
       try {
         const { result } = await distillSkill(
-          { events: session.events, notes: session.notes, qa: session.qa, priorDraft: session.draft ?? undefined },
+          {
+            events: session.events,
+            notes: session.notes,
+            qa: session.qa,
+            priorDraft: session.draft ?? undefined,
+            origin: session.origin,
+          },
           signal,
         );
         session.draft = result;
-        post({ type: 'teach_draft', draft: result, message: renderDraftMessage(result), teachPhase: 'reviewing' });
+        post({
+          type: 'teach_draft',
+          draft: result,
+          message: renderDraftMessage(result, session.origin),
+          teachPhase: 'reviewing',
+        });
       } catch (error) {
         const text = error instanceof Error ? error.message : String(error);
         post({
@@ -372,8 +482,7 @@ export async function handleTeachMessage(
     }
 
     case 'teach_save': {
-      if (!session?.draft)
-        return post({ type: 'teach_error', error: 'No skill draft to save.', teachPhase: phase() });
+      if (!session?.draft) return post({ type: 'teach_error', error: 'No skill draft to save.', teachPhase: phase() });
       const { draft } = session;
       await skillStore.upsert({
         name: draft.name,

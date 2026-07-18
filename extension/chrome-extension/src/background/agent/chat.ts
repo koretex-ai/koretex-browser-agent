@@ -125,8 +125,8 @@ export async function streamCloudChatReply(
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${orchestratorApiKey}`,
-      'HTTP-Referer': 'https://github.com/koretex-ai/local-browser-use',
-      'X-Title': 'Local Browser Use',
+      'HTTP-Referer': 'https://github.com/koretex-ai/koretex-browser-agent',
+      'X-Title': 'Koretex Browser Agent',
     },
     body: JSON.stringify({
       model: orchestratorModel,
