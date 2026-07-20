@@ -5,9 +5,10 @@ import { createLogger } from '../log';
 import { postExecutionEvent } from '../events';
 import { capturePageState } from '../perception';
 import { streamCloudChatReply } from './chat';
-import { nextStep, strategicReview, reportOutcome, curateCollection } from './orchestrator';
+import { nextStep, strategicReview, kickoffStrategy, reportOutcome, curateCollection } from './orchestrator';
 import { allSkills, applicableSkills, renderSkills, skillCatalog } from './skills';
-import { armDialogGuard } from '../actions/cdp';
+import { armDialogGuard, detachCdp } from '../actions/cdp';
+import { executeAction } from '../actions/executor';
 import { stashSuccessfulRun } from '../recorder/teach';
 import type { ProgramStep, CallUsage } from './orchestrator';
 import { createStepRunner, describeStep, listLines, itemKey } from './program';
@@ -230,10 +231,39 @@ export async function runStepwiseTask(
 
   let currentUrlPath = '';
 
+  // ---- RUN TAB SET (tab-per-site) ----
+  // Multi-site tasks used to thrash ONE tab: returning to the sheet meant
+  // reloading docs.google.com and re-finding the document — wasted steps and
+  // the classic tip-over of creating a duplicate "Untitled spreadsheet"
+  // (live failure 2026-07-20). Now each SITE gets its own tab for the whole
+  // run: the first navigate to a site opens a tab, every later navigate to
+  // that site SWITCHES to it (a pure switch when it already shows the
+  // requested page — state preserved, no reload). Deterministic and
+  // invisible to the navigator: it still just decides "navigate to <url>";
+  // the decision space is unchanged (tab bookkeeping belongs in code, not in
+  // a small model's hands). The navigator learns what is open via the RUN
+  // TABS line pinned into its prompt.
+  const MAX_RUN_TABS = 4;
+  let currentTab = tabId;
+  const runTabs = new Map<string, number>(); // site key -> tabId
+  // docs.google.com hosts several apps — a sheet and a doc must not share a tab
+  const siteKey = (url: URL): string => {
+    const host = url.host.replace(/^www\./, '');
+    return host === 'docs.google.com' ? `${host}/${url.pathname.split('/')[1] ?? ''}` : host;
+  };
+  const registerCurrentTabSite = (urlStr: string) => {
+    try {
+      runTabs.set(siteKey(new URL(urlStr)), currentTab);
+    } catch {
+      /* about:blank etc. — nothing to register */
+    }
+  };
+
   // One observation = digest for the prompt + screenshot for the judge's eyes
   const observe = async (): Promise<{ digest?: string; screenshot?: string }> => {
-    const state = await capturePageState(tabId, false).catch(() => null);
+    const state = await capturePageState(currentTab, false).catch(() => null);
     if (!state) return {};
+    registerCurrentTabSite(state.url);
     try {
       const url = new URL(state.url);
       currentUrlPath = url.host + url.pathname;
@@ -338,6 +368,11 @@ export async function runStepwiseTask(
   };
 
   // ---- RESUME / CLARIFY SEEDING (knowledge-replay, same as PAV) ----
+  // Resume kind steers the kickoff below: a stalled continuation skips it
+  // (the journal already carries the run's thinking); a clarify-resume
+  // re-runs it with asking disabled, so the answers become a strategy.
+  let resumedAfterClarify = false;
+  let resumedContinuation = false;
   const prior = await runStateStore.getRun(taskId).catch(() => null);
   const priorFresh = prior ? Date.now() - prior.updatedAt < RESUME_WINDOW_MS : false;
   if (prior && !priorFresh) {
@@ -360,11 +395,13 @@ export async function runStepwiseTask(
       }
     };
     if (prior.status === 'awaiting_clarification') {
+      resumedAfterClarify = true;
       seedFromPrior();
       goalText = `${prior.objective}\n\nThe user was asked: ${(prior.pendingQuestions ?? []).join(' ')}\nThe user answered: ${task}`;
       note(`resumed after clarification — user answered: ${task.slice(0, 160)}`);
       postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, 'Thanks — continuing with your answer.');
     } else if (prior.status === 'stalled' && CONTINUATION.test(task.trim())) {
+      resumedContinuation = true;
       seedFromPrior();
       goalText = prior.objective;
       note(
@@ -390,11 +427,82 @@ export async function runStepwiseTask(
     );
   }
 
+  // Native dialogs (beforeunload/alert/confirm) freeze the tab and are
+  // invisible to every sense — the guard auto-handles them at the browser
+  // level and reports here so the journal records what happened. Named so
+  // every run tab (multi-tab: one per site) arms the same guard.
+  const onNativeDialog = ({ kind, message, accepted }: { kind: string; message: string; accepted: boolean }) => {
+    const label =
+      kind === 'beforeunload'
+        ? '"Leave site?" — the page warned of unsaved changes; unsaved work on the previous page may be lost'
+        : `${kind}${message ? ` — "${message}"` : ''}`;
+    note(`native browser dialog ${accepted ? 'auto-accepted' : 'dismissed'}: ${label}`);
+    postExecutionEvent(
+      port,
+      Actors.SYSTEM,
+      'step.ok',
+      taskId,
+      `🛡 Native dialog ${accepted ? 'accepted' : 'dismissed'}: ${label}`,
+    );
+  };
+
+  // Managed navigate (tab-per-site; see RUN TAB SET above). Same URL in the
+  // site's tab = pure switch, no reload; new URL on a known site = navigate
+  // within its tab; new site = its own tab (capped — beyond the cap, load in
+  // place). The returned message reaches the journal and the judge.
+  const navigateManaged = async (rawUrl: string): Promise<{ ok: boolean; message: string }> => {
+    const urlStr = /^[a-z]+:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+    let key: string | null = null;
+    try {
+      key = siteKey(new URL(urlStr));
+    } catch {
+      key = null;
+    }
+    const inPlace = () => executeAction(currentTab, taskId, { type: 'navigate', url: urlStr }, null);
+
+    const existing = key !== null ? runTabs.get(key) : undefined;
+    if (existing !== undefined && existing !== currentTab) {
+      const alive = await chrome.tabs.get(existing).catch(() => null);
+      if (!alive) {
+        runTabs.delete(key!); // the user closed that tab — reopen below
+      } else {
+        currentTab = existing;
+        await chrome.tabs.update(existing, { active: true }).catch(() => {});
+        if ((alive.url ?? '').split('#')[0] === urlStr.split('#')[0]) {
+          return { ok: true, message: `switched to the existing ${key} tab — page state preserved, no reload` };
+        }
+        const result = await inPlace();
+        return result.ok ? { ok: true, message: `switched to the ${key} tab and navigated to ${urlStr}` } : result;
+      }
+    }
+    if (existing === undefined && key !== null) {
+      const distinctTabs = new Set(runTabs.values());
+      distinctTabs.add(currentTab);
+      if (distinctTabs.size < MAX_RUN_TABS) {
+        const windowId = (await chrome.tabs.get(currentTab).catch(() => null))?.windowId;
+        const created = await chrome.tabs
+          .create({ url: urlStr, active: true, ...(windowId !== undefined ? { windowId } : {}) })
+          .catch(() => null);
+        if (created?.id !== undefined) {
+          runTabs.set(key, created.id);
+          currentTab = created.id;
+          await armDialogGuard(created.id, onNativeDialog).catch(error =>
+            logger.warning('dialog guard unavailable on new tab:', error),
+          );
+          return { ok: true, message: `opened ${key} in its own new tab (the previous tab keeps its state)` };
+        }
+      }
+    }
+    return inPlace();
+  };
+
   const runner = createStepRunner(
     tabId,
     taskId,
     {
       runId: taskId,
+      resolveTab: () => currentTab,
+      navigateTab: navigateManaged,
       onExtract: recordExtract,
       knownData: () => collection.slice(-8).map(entry => entry.slice(0, 250)),
       collectedItems: () => collection,
@@ -448,23 +556,8 @@ export async function runStepwiseTask(
   // sharing a built-in's name replaces it
   const skillSet = allSkills(await skillStore.getAll().catch(() => []));
 
-  // Native dialogs (beforeunload/alert/confirm) freeze the tab and are
-  // invisible to every sense — the guard auto-handles them at the browser
-  // level and reports here so the journal records what happened
-  await armDialogGuard(tabId, ({ kind, message, accepted }) => {
-    const label =
-      kind === 'beforeunload'
-        ? '"Leave site?" — the page warned of unsaved changes; unsaved work on the previous page may be lost'
-        : `${kind}${message ? ` — "${message}"` : ''}`;
-    note(`native browser dialog ${accepted ? 'auto-accepted' : 'dismissed'}: ${label}`);
-    postExecutionEvent(
-      port,
-      Actors.SYSTEM,
-      'step.ok',
-      taskId,
-      `🛡 Native dialog ${accepted ? 'accepted' : 'dismissed'}: ${label}`,
-    );
-  }).catch(error => {
+  // Arm the dialog guard on the initial tab (new tabs arm in navigateManaged)
+  await armDialogGuard(tabId, onNativeDialog).catch(error => {
     // e.g. DevTools already open on the tab — run continues unguarded
     logger.warning('dialog guard unavailable:', error);
   });
@@ -576,6 +669,65 @@ export async function runStepwiseTask(
   };
 
   try {
+    // ---- KICKOFF (strategic review #0) ----
+    // Interpret the INTENT before the first literal-minded step (live
+    // failure 2026-07-20: "decision makers" typed verbatim into a search
+    // box; the insight arrived 14 steps later via a stuck-triggered review).
+    // One reasoning call: strategy -> pinned as the opening ACTIVE STRATEGY;
+    // proceed -> trivial/conversational, straight to the loop; clarify ->
+    // ask the user and end the turn (the reply resumes via the clarify path
+    // above, which re-runs kickoff with asking disabled). Does not consume
+    // the reactive review budget. Skipped on stalled continuations — the
+    // seeded journal already carries the run's thinking.
+    if (!resumedContinuation) {
+      heartbeat('Reading the task — working out the intent and an approach…');
+      try {
+        const applicable = applicableSkills(goalText, currentUrlPath, skillSet);
+        const call = await kickoffStrategy(
+          {
+            objective: goalText,
+            skills: renderSkills(applicable) || undefined,
+            skillCatalog: skillCatalog(skillSet, new Set(applicable.map(s => s.name))) || undefined,
+            timeBudgetMin: Math.round(MAX_TASK_MS / 60_000),
+            noClarify: resumedAfterClarify,
+          },
+          signal,
+          heartbeat,
+        );
+        const meta = track(call.usage);
+        const kick = call.result;
+        if (kick.verdict === 'clarify' && kick.questions?.length) {
+          const questions = kick.questions.slice(0, 3);
+          pendingQuestions = questions;
+          record.outcome = 'ok';
+          record.answer = questions.join('\n');
+          await persist('awaiting_clarification');
+          postExecutionEvent(
+            port,
+            Actors.ASSISTANT,
+            'task.ok',
+            taskId,
+            `Before I start, a couple of things so I get this right:\n${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`,
+            meta,
+          );
+          return;
+        }
+        const strategy = (kick.strategy ?? '').trim();
+        if (kick.verdict === 'strategy' && strategy) {
+          activeStrategy = strategy;
+          // Same-text rule as reviews: a later review merely echoing the
+          // kickoff has no new idea and ends the run honestly
+          lastStrategyText = strategy;
+          note(`KICKOFF strategy: ${strategy.slice(0, 200)}`);
+          postExecutionEvent(port, Actors.SYSTEM, 'step.ok', taskId, `🧭 Approach: ${strategy}`, meta);
+        }
+      } catch (error) {
+        if (signal.aborted) throw error;
+        logger.warning('kickoff call failed:', error);
+        note('the kickoff strategy call failed — starting without an opening strategy');
+      }
+    }
+
     heartbeat('Looking at the page and deciding the first step…');
     while (stepsUsed < MAX_STEPS) {
       if (signal.aborted) throw new DOMException('aborted', 'AbortError');
@@ -630,6 +782,22 @@ export async function runStepwiseTask(
         }
       }
 
+      // RUN TABS context — only once a second site is open (single-tab runs
+      // stay exactly as before, no prompt noise)
+      let openTabsLines: string | undefined;
+      const distinctRunTabs = [...new Map([...runTabs.entries()].map(([key, id]) => [id, key])).entries()];
+      if (distinctRunTabs.length > 1) {
+        const lines = await Promise.all(
+          distinctRunTabs.map(async ([id, key]) => {
+            const tab = await chrome.tabs.get(id).catch(() => null);
+            if (!tab) return null;
+            const marker = id === currentTab ? ' ← YOU ARE HERE' : '';
+            return `- ${key}: ${(tab.url ?? '').slice(0, 120)} — "${(tab.title ?? '').slice(0, 60)}"${marker}`;
+          }),
+        );
+        openTabsLines = lines.filter(Boolean).join('\n') || undefined;
+      }
+
       let call;
       try {
         call = await nextStep(
@@ -644,6 +812,7 @@ export async function runStepwiseTask(
             activeStrategy: activeStrategy || undefined,
             skills: renderSkills(activeSkills) || undefined,
             skillCatalog: skillCatalog(skillSet, new Set(activeSkills.map(s => s.name))) || undefined,
+            openTabs: openTabsLines,
             screenshotDataUrl: observed.screenshot,
           },
           signal,
@@ -1063,6 +1232,13 @@ export async function runStepwiseTask(
     }
     throw error;
   } finally {
+    // Multi-tab runs: drop the CDP session from every EXTRA tab this run
+    // opened (loop.ts detaches the initial one). The tabs themselves stay
+    // open by policy — the deliverable (e.g. the written sheet) may be one
+    // of them; scheduled runs clean up wholesale when their window closes.
+    for (const extraTabId of new Set(runTabs.values())) {
+      if (extraTabId !== tabId) await detachCdp(extraTabId).catch(() => {});
+    }
     trajectoryStore
       .appendSubtask({
         id: taskId,

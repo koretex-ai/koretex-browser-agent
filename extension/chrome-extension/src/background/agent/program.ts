@@ -52,6 +52,17 @@ export interface StepRunnerContext {
   scrubForCloud?: boolean;
   /** Cost attribution for cloud reader calls */
   onUsage?: (usage: CallUsage) => void;
+  /**
+   * Live current tab for multi-tab runs (tab-per-site) — every action and
+   * perception targets this. Default: the tab the runner was created with.
+   */
+  resolveTab?: () => number;
+  /**
+   * Multi-tab navigate delegate: the conductor decides whether a navigate
+   * means "open a new tab", "switch to the site's existing tab", or "load in
+   * place". When absent, navigate loads in the current tab as always.
+   */
+  navigateTab?: (url: string) => Promise<{ ok: boolean; message: string }>;
 }
 
 export interface StepRunner {
@@ -216,11 +227,13 @@ function pageSignature(state: PerceptionSnapshot | null): string {
  * retries, verification, and reflection are the conductor's job.
  */
 export function createStepRunner(
-  tabId: number,
+  initialTabId: number,
   taskId: string,
   ctx: StepRunnerContext,
   signal: AbortSignal,
 ): StepRunner {
+  // Multi-tab runs move the working tab as sites open in their own tabs
+  const tab = () => ctx.resolveTab?.() ?? initialTabId;
   let lastState: PerceptionSnapshot | null = null;
   const history: string[] = [];
 
@@ -229,9 +242,9 @@ export function createStepRunner(
   // ("reading the page timed out after 12s") instead of a generic shrug
   let lastPerceiveError = '';
   const perceive = async (): Promise<PerceptionSnapshot | null> => {
-    const state = await capturePageState(tabId, false).catch(async () => {
+    const state = await capturePageState(tab(), false).catch(async () => {
       await sleep(1500);
-      return capturePageState(tabId, false).catch(error => {
+      return capturePageState(tab(), false).catch(error => {
         lastPerceiveError = error instanceof Error ? error.message : String(error);
         return null;
       });
@@ -256,7 +269,7 @@ export function createStepRunner(
   // re-reports items that stay in view across scrolls, so only never-seen
   // lines count toward the target — and only they reach the journal.
   const runExtract = async (query: string, seen?: Set<string>): Promise<{ newItems: number; note: string }> => {
-    let pageText = await capturePageText(tabId).catch(() => lastState?.pageText ?? '');
+    let pageText = await capturePageText(tab()).catch(() => lastState?.pageText ?? '');
     const endpoint = ctx.readerEndpoint ?? LOCAL_ENDPOINT;
     // Cloud reading sends the FULL page text off-machine — pseudonymize
     // detectable identifiers first when the PII guard is on
@@ -340,10 +353,12 @@ export function createStepRunner(
     switch (step.do) {
       case 'navigate':
         if (!step.url) return { ok: false, message: 'navigate step has no url' };
-        return executeAction(tabId, taskId, { type: 'navigate', url: step.url }, lastState, logContextFor(step));
+        // Multi-tab runs route navigation through the conductor's tab manager
+        if (ctx.navigateTab) return ctx.navigateTab(step.url);
+        return executeAction(tab(), taskId, { type: 'navigate', url: step.url }, lastState, logContextFor(step));
       case 'key':
         if (!step.combo) return { ok: false, message: 'key step has no combo' };
-        return executeAction(tabId, taskId, { type: 'key', combo: step.combo }, lastState, logContextFor(step));
+        return executeAction(tab(), taskId, { type: 'key', combo: step.combo }, lastState, logContextFor(step));
       case 'type_focused': {
         const text = resolveStepText(step);
         if (!text) {
@@ -355,7 +370,7 @@ export function createStepRunner(
                 : 'type_focused step has no text',
           };
         }
-        return executeAction(tabId, taskId, { type: 'type_focused', text }, lastState, logContextFor(step));
+        return executeAction(tab(), taskId, { type: 'type_focused', text }, lastState, logContextFor(step));
       }
       case 'wait':
         await sleep(Math.min(step.ms ?? 1000, 10000));
@@ -386,7 +401,7 @@ export function createStepRunner(
         const times = Math.min(step.times ?? 1, 10);
         for (let i = 0; i < times; i++) {
           await executeAction(
-            tabId,
+            tab(),
             taskId,
             { type: 'scroll', direction: step.direction ?? 'down' },
             lastState,
@@ -404,12 +419,12 @@ export function createStepRunner(
         // tie between distinct elements (two "Post" buttons) goes to vision,
         // which sees the screenshot and can pick the right one.
         if (match.index !== null && !match.ambiguous) {
-          return executeAction(tabId, taskId, { type: 'click', index: match.index }, state, logContextFor(step));
+          return executeAction(tab(), taskId, { type: 'click', index: match.index }, state, logContextFor(step));
         }
         try {
-          const point = await groundTarget(tabId, step.target, signal);
+          const point = await groundTarget(tab(), step.target, signal);
           return executeAction(
-            tabId,
+            tab(),
             taskId,
             { type: 'click_at', x: point.x, y: point.y, target: point.target },
             state,
@@ -431,15 +446,15 @@ export function createStepRunner(
         if (!state) return { ok: false, message: readFailure('input') };
         const match = resolveTargetDetail(state, step.target);
         if (match.index !== null && !match.ambiguous) {
-          return executeAction(tabId, taskId, { type: 'type', index: match.index, text }, state, logContextFor(step));
+          return executeAction(tab(), taskId, { type: 'type', index: match.index, text }, state, logContextFor(step));
         }
         // Vision fallback — the same ladder click has. Rich/contenteditable
         // composers often expose no matchable label: ground the field on the
         // screenshot, click to focus it, then type as trusted keyboard input.
         try {
-          const point = await groundTarget(tabId, step.target, signal);
+          const point = await groundTarget(tab(), step.target, signal);
           const focus = await executeAction(
-            tabId,
+            tab(),
             taskId,
             { type: 'click_at', x: point.x, y: point.y, target: point.target },
             state,
@@ -452,8 +467,8 @@ export function createStepRunner(
           // scoped to the focused editable itself, so a grid can never be hit.
           // Without this, a retry into a rich composer APPENDS (live WhatsApp
           // failure 2026-07-18: "good morning" snowballed to 8 copies).
-          await runInPage(tabId, clearFocusedEditable).catch(() => {});
-          return executeAction(tabId, taskId, { type: 'type_focused', text }, lastState, logContextFor(step));
+          await runInPage(tab(), clearFocusedEditable).catch(() => {});
+          return executeAction(tab(), taskId, { type: 'type_focused', text }, lastState, logContextFor(step));
         } catch (error) {
           if (signal.aborted) throw error;
           const message = error instanceof Error ? error.message : String(error);
@@ -482,7 +497,7 @@ export function createStepRunner(
       case 'verify_visual': {
         if (!step.question) return { ok: false, message: 'verify_visual step has no question' };
         // Local VLM reads the screenshot; only the verdict leaves the machine
-        const answer = await verifyVisual(tabId, step.question, signal);
+        const answer = await verifyVisual(tab(), step.question, signal);
         return { ok: true, message: answer.slice(0, 200) };
       }
       case 'harvest': {
@@ -500,7 +515,7 @@ export function createStepRunner(
           const { newItems } = await runExtract(step.query, seen);
           total += newItems;
           if (total >= target) return { ok: true, message: `collected ${total} unique items` };
-          await executeAction(tabId, taskId, { type: 'scroll', direction: 'down' }, lastState, logContextFor(step));
+          await executeAction(tab(), taskId, { type: 'scroll', direction: 'down' }, lastState, logContextFor(step));
           const state = await perceive();
           const sig = pageSignature(state);
           // A round is dry when the page did not change OR it yielded nothing

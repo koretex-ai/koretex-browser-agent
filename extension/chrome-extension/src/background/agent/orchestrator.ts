@@ -321,6 +321,71 @@ export async function strategicReview(
   return { result: value, usage };
 }
 
+// ---- KICKOFF (strategic review #0 — intent before the first action) ----
+// The per-step navigator takes objectives literally (live failure 2026-07-20:
+// "decision makers" was typed verbatim into LinkedIn search; the run only got
+// smart after a mid-run review earned the same insight 14 steps in). One
+// reasoning-ON call BEFORE the loop interprets the intent, sets the OPENING
+// active strategy, or asks the user. Deliberately blind to the page: it
+// charts intent and approach, never page mechanics — the navigator still
+// decides every step from the live screenshot, and later strategic reviews
+// supersede this strategy freely. Triage is folded in ("proceed" for trivial
+// or conversational objectives) instead of a separate complexity call.
+const KICKOFF_SYSTEM_PROMPT = `You are the strategist for a browser agent about to start a task. The fast per-step navigator will decide one step at a time from live screenshots; you run ONCE, before it starts, so it begins thoughtfully instead of literally.
+
+THINK about what the user actually WANTS — the intent behind the words — and how a capable operator would approach it. Translate class phrases into the concrete terms a website can act on (e.g. "decision makers" means concrete titles — CEO, CTO, Managing Director, Founder — the literal phrase must never be typed into a search box; "cheap flights" means specific dates, routes and a sort order). Consider which site or surface fits the goal, what "done" looks like, and the first move. If SITE PLAYBOOKS are provided, fold their proven routes into the approach.
+
+Reply ONLY with a JSON object, one of:
+{"verdict":"strategy","strategy":"<opening orders for the navigator: the interpreted intent, the approach, and the first move — at most 4 sentences. Intent and approach only, NEVER page mechanics or numbered step lists: you have not seen the page.>"}
+{"verdict":"proceed"}  — the objective is conversational, or so direct that interpretation adds nothing (e.g. "open example.com").
+{"verdict":"clarify","questions":["<1-3 questions>"]}  — ONLY when the objective is ambiguous in a way that would change the OUTCOME and no reasonable default exists. When a sane default exists, assume it, fold the assumption into the strategy, and do not ask. Never ask about details the page will reveal anyway.`;
+
+export interface KickoffResult {
+  verdict: 'strategy' | 'proceed' | 'clarify';
+  strategy?: string;
+  questions?: string[];
+}
+
+export interface KickoffArgs {
+  objective: string;
+  /** Rendered site playbooks whose intent-trigger matches the objective */
+  skills?: string;
+  /** One-line index of the user's other playbooks */
+  skillCatalog?: string;
+  timeBudgetMin?: number;
+  /** Clarify-resume: the user already answered questions — forbid asking more */
+  noClarify?: boolean;
+}
+
+export async function kickoffStrategy(
+  args: KickoffArgs,
+  signal: AbortSignal,
+  onProgress?: ProgressFn,
+): Promise<{ result: KickoffResult; usage: CallUsage }> {
+  const { navigatorModel } = await chatSettingsStore.getSettings();
+  const content =
+    `OBJECTIVE: ${args.objective}` +
+    pseudonymSection() +
+    (args.timeBudgetMin !== undefined ? `\nTIME BUDGET: about ${args.timeBudgetMin} minute(s)` : '') +
+    (args.skills
+      ? `\n\nSITE PLAYBOOKS (proven notes for the sites this task likely involves — fold their routes into the approach):\n${args.skills}`
+      : '') +
+    (args.skillCatalog
+      ? `\n\nOTHER PLAYBOOKS THE USER HAS (one line each — if one covers the objective, route the approach through its site):\n${args.skillCatalog}`
+      : '') +
+    (args.noClarify
+      ? '\n\nThe user has ALREADY answered clarifying questions — "clarify" is not available. Reply with "strategy" or "proceed".'
+      : '');
+  const { value, usage } = await callOrchestrator<KickoffResult>(KICKOFF_SYSTEM_PROMPT, content, signal, onProgress, {
+    modelOverride: navigatorModel || undefined,
+    deepReview: true,
+  });
+  if (!['strategy', 'proceed', 'clarify'].includes(value.verdict)) {
+    throw new Error(`Kickoff returned invalid verdict: ${String(value.verdict)}`);
+  }
+  return { result: value, usage };
+}
+
 export interface NextArgs {
   objective: string;
   journal: string[];
@@ -333,6 +398,8 @@ export interface NextArgs {
   timeRemainingMin?: number;
   /** Standing orders from the last strategic review, pinned into every turn */
   activeStrategy?: string;
+  /** Multi-tab runs: one line per open run tab (url — title, current marked) */
+  openTabs?: string;
   /** Rendered site playbooks applicable this turn (skills.ts), pinned like the strategy */
   skills?: string;
   /** One-line index of the user's OTHER playbooks (not in force this turn) */
@@ -364,8 +431,11 @@ export async function nextStep(
   const catalogSection = args.skillCatalog
     ? `\n\nOTHER PLAYBOOKS THE USER HAS (one line each — full notes activate when you are on their site or the task matches; when one covers the objective, PREFER its site and route over improvising):\n${args.skillCatalog}`
     : '';
+  const tabsSection = args.openTabs
+    ? `\n\nRUN TABS (each site this run opened lives in its OWN tab, all still open with their state intact — to return to one, decide a navigate to its URL and the runtime SWITCHES to that tab without reloading; never re-find an already-open document via a site's home page):\n${args.openTabs}`
+    : '';
   const buildContent = (withScreenshot: boolean) =>
-    `OBJECTIVE: ${args.objective}${pseudonymSection()}${budgetLine}${strategySection}${skillsSection}${catalogSection}` +
+    `OBJECTIVE: ${args.objective}${pseudonymSection()}${budgetLine}${strategySection}${skillsSection}${catalogSection}${tabsSection}` +
     lastSection +
     pageSection +
     (withScreenshot
