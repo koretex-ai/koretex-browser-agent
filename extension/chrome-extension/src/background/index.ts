@@ -5,6 +5,9 @@ import { runAgentTask } from './agent/loop';
 import { streamChatReply } from './agent/chat';
 import { handleTeachMessage } from './recorder/teach';
 import { initSchedules, setUserTaskProbe, cancelScheduledRun } from './schedules';
+import { acquireTaskTab } from './taskWindow';
+import { postExecutionEvent } from './events';
+import { Actors } from '@extension/storage';
 
 const logger = createLogger('background');
 
@@ -57,9 +60,30 @@ chrome.runtime.onConnect.addListener(port => {
           currentAbort = abort;
           try {
             if (message.tabId) {
-              // Agent mode: the loop decides whether the task needs the browser
+              // Agent mode runs in the DEDICATED agent window, never in the
+              // tab the user is browsing (user decision 2026-07-20). Same
+              // session reuses its tab so "continue" sees the stalled page.
+              const acquired = await acquireTaskTab(message.taskId);
+              if (acquired?.created === 'window') {
+                postExecutionEvent(
+                  port,
+                  Actors.SYSTEM,
+                  'step.ok',
+                  message.taskId,
+                  '🪟 Opening a separate window to run this task — keep using your current window; progress shows here.',
+                );
+              } else if (acquired?.created === 'tab') {
+                postExecutionEvent(
+                  port,
+                  Actors.SYSTEM,
+                  'step.ok',
+                  message.taskId,
+                  '🪟 Running in the agent window (new tab) — keep using your current window.',
+                );
+              }
+              // The loop decides whether the task needs the browser
               // (a 'respond' decision falls back to plain streaming chat)
-              await runAgentTask(port, message.tabId, message.taskId, message.task, abort.signal);
+              await runAgentTask(port, acquired?.tabId ?? message.tabId, message.taskId, message.task, abort.signal);
             } else {
               await streamChatReply(port, message.taskId, message.task, abort.signal);
             }
