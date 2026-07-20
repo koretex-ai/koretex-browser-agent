@@ -57,8 +57,13 @@ const SidePanel = () => {
     sessionIdRef.current = currentSessionId;
   }, [currentSessionId]);
 
+  // True while the LAST displayed message is a collapsible agent-step line
+  // (see upsertStepLine); any ordinary append breaks the collapse chain
+  const lastStepLineRef = useRef(false);
+
   const appendMessage = useCallback((newMessage: Message, sessionId?: string | null) => {
     setMessages(prev => [...prev, newMessage]);
+    lastStepLineRef.current = false;
 
     // Use provided sessionId if available, otherwise fall back to sessionIdRef.current
     const effectiveSessionId = sessionId !== undefined ? sessionId : sessionIdRef.current;
@@ -68,6 +73,27 @@ const SidePanel = () => {
         .addMessage(effectiveSessionId, newMessage)
         .catch(err => console.error('Failed to save message to history:', err));
     }
+  }, []);
+
+  // Agent-step narration. The panel that STARTED the task (it owns the
+  // session) shows steps as ONE live-updating status line — the full stream
+  // was pure duplication next to the agent window's trace viewer (user
+  // feedback 2026-07-20); every step still persists to chat history, so the
+  // complete trace remains one click away. A panel with NO session loaded
+  // (the trace viewer) appends every step — it IS the full trace.
+  const upsertStepLine = useCallback((newMessage: Message) => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) {
+      setMessages(prev => [...prev, newMessage]);
+      return;
+    }
+    chatHistoryStore
+      .addMessage(sessionId, newMessage)
+      .catch(err => console.error('Failed to save message to history:', err));
+    setMessages(prev =>
+      lastStepLineRef.current && prev.length > 0 ? [...prev.slice(0, -1), newMessage] : [...prev, newMessage],
+    );
+    lastStepLineRef.current = true;
   }, []);
 
   const finishTask = useCallback(() => {
@@ -89,8 +115,9 @@ const SidePanel = () => {
           setStreamingText('');
           break;
         case ExecutionState.STEP_OK:
-          // Agent-loop progress: narrate the step, keep the task running
-          appendMessage({
+          // Agent-loop progress: one live-updating line here; the full
+          // stream shows in the trace viewer and persists to history
+          upsertStepLine({
             actor: Actors.SYSTEM,
             content,
             timestamp,
@@ -131,7 +158,7 @@ const SidePanel = () => {
           console.error('Unexpected execution state', actor, state);
       }
     },
-    [appendMessage, finishTask],
+    [appendMessage, upsertStepLine, finishTask],
   );
 
   // Stop heartbeat and close connection
