@@ -52,7 +52,34 @@ export async function syncScheduleAlarms(): Promise<void> {
 }
 
 /**
- * One occurrence: run the schedule's task against the user's active tab,
+ * Dedicated window for a scheduled occurrence — scheduled runs must never
+ * borrow the user's tab (live complaint 2026-07-20: a schedule navigated
+ * away from the page the user was on). Desktop-sized on purpose: the width
+ * keeps sites in their desktop layouts and satisfies the grounder's >=1280px
+ * screenshot requirement; opened unfocused so it lands behind the user's
+ * work; removed again when the run ends. NEVER minimized — Chrome freezes
+ * the pages of minimized windows (rAF stops), which is what wedged the first
+ * live scheduled run.
+ */
+async function openScheduledWindow(): Promise<{ windowId: number; tabId: number } | null> {
+  try {
+    const win = await chrome.windows.create({
+      url: 'about:blank',
+      focused: false,
+      width: 1290,
+      height: 900,
+    });
+    const tabId = win?.tabs?.[0]?.id;
+    if (win?.id === undefined || tabId === undefined) return null;
+    return { windowId: win.id, tabId };
+  } catch (error) {
+    logger.error('could not open a dedicated window for the scheduled run', error);
+    return null;
+  }
+}
+
+/**
+ * One occurrence: run the schedule's task in its own dedicated window,
  * persisting progress into a fresh chat session so the run is inspectable
  * from History even when the side panel is closed.
  */
@@ -63,17 +90,9 @@ async function runScheduledTask(scheduleId: string, abort: AbortController): Pro
     return;
   }
 
-  const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  let tabId = tabs[0]?.id;
-  if (!tabId) {
-    const tab = await chrome.tabs.create({ url: 'about:blank', active: true });
-    tabId = tab.id;
-  }
-  if (!tabId) {
-    await scheduleStore.recordRun(scheduleId, 'failed — no browser tab available');
-    return;
-  }
-
+  // Session first: it doubles as the run's trace, so even a run that dies
+  // before touching the browser leaves an inspectable record. beginRun links
+  // the session to the schedule's run history (shown in the Schedules panel).
   const session = await chatHistoryStore.createSession(
     `⏰ ${schedule.task.substring(0, 50)}${schedule.task.length > 50 ? '...' : ''}`,
   );
@@ -82,6 +101,19 @@ async function runScheduledTask(scheduleId: string, abort: AbortController): Pro
     content: `Scheduled run #${schedule.runCount + 1}: ${schedule.task}`,
     timestamp: Date.now(),
   });
+  await scheduleStore.beginRun(scheduleId, session.id);
+
+  const dedicated = await openScheduledWindow();
+  if (!dedicated) {
+    await chatHistoryStore.addMessage(session.id, {
+      actor: Actors.SYSTEM,
+      content: 'Could not open a browser window to run in.',
+      timestamp: Date.now(),
+    });
+    await scheduleStore.finishRun(scheduleId, session.id, 'failed — could not open a browser window');
+    return;
+  }
+  const { windowId, tabId } = dedicated;
 
   // runAgentTask only ever calls postMessage on the port; this shim routes
   // the events into chat history instead of a live side panel
@@ -118,11 +150,16 @@ async function runScheduledTask(scheduleId: string, abort: AbortController): Pro
   } catch (error) {
     logger.error('scheduled run crashed', error);
     finalState = 'task.fail';
+  } finally {
+    // The run is over either way — its window has served its purpose. If the
+    // user closed it mid-run this is a no-op (and the run failed on its own).
+    await chrome.windows.remove(windowId).catch(() => {});
   }
   if (abort.signal.aborted) finalState = 'task.cancel';
 
-  const updated = await scheduleStore.recordRun(
+  const updated = await scheduleStore.finishRun(
     scheduleId,
+    session.id,
     finalState === 'task.ok' ? 'ok' : finalState === 'task.cancel' ? 'cancelled — a user task took over' : 'failed',
   );
   if (updated && (!updated.enabled || isScheduleComplete(updated))) {

@@ -74,7 +74,9 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
   // Editing a pristine built-in turns it into an override draft
   const updateDraft = (index: number, patch: Partial<SkillDraft>) => {
     setDrafts(prev =>
-      prev.map((draft, i) => (i === index ? { ...draft, ...patch, overridden: draft.builtIn || draft.overridden } : draft)),
+      prev.map((draft, i) =>
+        i === index ? { ...draft, ...patch, overridden: draft.builtIn || draft.overridden } : draft,
+      ),
     );
   };
 
@@ -179,7 +181,9 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
   }`;
   const labelClass = `mb-1 block text-xs font-medium ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`;
   const smallButtonClass = `rounded-md border px-2 py-1 text-xs transition-colors ${
-    isDarkMode ? 'border-[#3D3D3D]/50 text-gray-400 hover:text-gray-200' : 'border-gray-300 text-gray-500 hover:text-gray-700'
+    isDarkMode
+      ? 'border-[#3D3D3D]/50 text-gray-400 hover:text-gray-200'
+      : 'border-gray-300 text-gray-500 hover:text-gray-700'
   }`;
   const badgeClass = `rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
     isDarkMode ? 'border-[#3D3D3D]/60 text-[#E8E8E8]' : 'border-gray-300 text-gray-500'
@@ -189,7 +193,7 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
   }`;
 
   return (
-    <div className={`border-t pt-6 ${isDarkMode ? 'border-[#3D3D3D]/40' : 'border-gray-200'}`}>
+    <div>
       <h2 className={`mb-1 text-lg font-semibold ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
         Site playbooks (skills)
       </h2>
@@ -216,7 +220,8 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
                 {draft.builtIn && <span className={badgeClass}>built-in</span>}
                 {draft.builtIn && draft.overridden && <span className={editedBadgeClass}>edited</span>}
               </span>
-              <span className={`flex shrink-0 items-center gap-2 text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+              <span
+                className={`flex shrink-0 items-center gap-2 text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                 {draft.hosts && <span className="max-w-[220px] truncate">{draft.hosts}</span>}
                 <span>{expandedIndex === index ? '▾' : '▸'}</span>
               </span>
@@ -268,7 +273,9 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
                     value={draft.guidance}
                     onChange={e => updateDraft(index, { guidance: e.target.value })}
                     rows={draft.builtIn ? 10 : 5}
-                    placeholder={'Find X on site.com — use when the user asks for X.\nStart at https://...\nNever click ... — use ... instead.'}
+                    placeholder={
+                      'Find X on site.com — use when the user asks for X.\nStart at https://...\nNever click ... — use ... instead.'
+                    }
                     className={inputClass}
                   />
                 </div>
@@ -303,7 +310,10 @@ export const SkillSettings = ({ isDarkMode = false }: SkillSettingsProps) => {
         <button
           type="button"
           onClick={() => {
-            setDrafts(prev => [...prev, { name: '', hosts: '', intent: '', guidance: '', builtIn: false, overridden: false }]);
+            setDrafts(prev => [
+              ...prev,
+              { name: '', hosts: '', intent: '', guidance: '', builtIn: false, overridden: false },
+            ]);
             setExpandedIndex(drafts.length);
           }}
           className={smallButtonClass}>

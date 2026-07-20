@@ -1,6 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
-import { FiClock, FiEdit2, FiPlus, FiTrash2 } from 'react-icons/fi';
-import { scheduleStore, nextRunAt, isScheduleComplete, type ScheduleRecord } from '@extension/storage';
+import { FiClock, FiEdit2, FiPlus, FiTrash2, FiChevronDown, FiChevronRight } from 'react-icons/fi';
+import {
+  scheduleStore,
+  nextRunAt,
+  isScheduleComplete,
+  SCHEDULES_STORAGE_KEY,
+  type ScheduleRecord,
+} from '@extension/storage';
+
+interface ScheduleListProps {
+  /** Open a run's trace: loads that chat session and leaves the Schedules view */
+  onOpenRun: (sessionId: string) => void;
+}
 
 type IntervalUnit = 'minutes' | 'hours' | 'days';
 
@@ -54,10 +65,17 @@ function toDraft(schedule: ScheduleRecord): DraftSchedule {
   };
 }
 
-const ScheduleList = () => {
+/** "2m 10s" / "45s" duration for a finished run */
+function describeDuration(startedAt: number, endedAt: number): string {
+  const s = Math.max(0, Math.round((endedAt - startedAt) / 1000));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
+const ScheduleList = ({ onOpenRun }: ScheduleListProps) => {
   const [schedules, setSchedules] = useState<ScheduleRecord[]>([]);
   const [draft, setDraft] = useState<DraftSchedule | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     const all = await scheduleStore.getAll();
@@ -66,6 +84,16 @@ const ScheduleList = () => {
 
   useEffect(() => {
     reload().catch(err => console.error('Failed to load schedules:', err));
+    // Live refresh: the background writes run status into the store as runs
+    // start and finish — without this the panel showed stale counts ("0 runs
+    // so far" during the first run, live confusion 2026-07-20)
+    const onStoreChange = (changes: Record<string, unknown>, area: string) => {
+      if (area === 'local' && SCHEDULES_STORAGE_KEY in changes) {
+        reload().catch(err => console.error('Failed to reload schedules:', err));
+      }
+    };
+    chrome.storage.onChanged.addListener(onStoreChange);
+    return () => chrome.storage.onChanged.removeListener(onStoreChange);
   }, [reload]);
 
   const handleSave = async () => {
@@ -231,6 +259,8 @@ const ScheduleList = () => {
         {schedules.map(schedule => {
           const next = nextRunAt(schedule, Date.now());
           const complete = isScheduleComplete(schedule);
+          const runs = schedule.runs ?? [];
+          const expanded = expandedId === schedule.id;
           return (
             <div key={schedule.id} className="rounded-lg border border-white/20 bg-[#0A0A0A] p-3">
               <div className="flex items-start justify-between gap-2">
@@ -278,13 +308,53 @@ const ScheduleList = () => {
                   </div>
                 )}
               </div>
-              {!complete && (
-                <button
-                  type="button"
-                  onClick={() => handleToggle(schedule)}
-                  className="mt-2 rounded-md border border-white/30 px-2 py-0.5 text-xs text-gray-300 hover:text-white">
-                  {schedule.enabled ? 'Pause' : 'Resume'}
-                </button>
+              <div className="mt-2 flex items-center gap-2">
+                {!complete && (
+                  <button
+                    type="button"
+                    onClick={() => handleToggle(schedule)}
+                    className="rounded-md border border-white/30 px-2 py-0.5 text-xs text-gray-300 hover:text-white">
+                    {schedule.enabled ? 'Pause' : 'Resume'}
+                  </button>
+                )}
+                {runs.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setExpandedId(expanded ? null : schedule.id)}
+                    className="flex items-center gap-1 rounded-md border border-white/30 px-2 py-0.5 text-xs text-gray-300 hover:text-white"
+                    aria-expanded={expanded}>
+                    {expanded ? <FiChevronDown size={12} /> : <FiChevronRight size={12} />}
+                    Runs ({runs.length})
+                  </button>
+                )}
+              </div>
+              {expanded && (
+                <div className="mt-2 space-y-1 border-t border-white/10 pt-2">
+                  {runs.map(run => (
+                    <div key={run.sessionId} className="flex items-center justify-between gap-2 text-xs">
+                      <div className="min-w-0 flex-1 truncate text-gray-400">
+                        {new Date(run.startedAt).toLocaleString()} ·{' '}
+                        <span
+                          className={
+                            run.status === 'ok'
+                              ? 'text-green-400'
+                              : run.status === 'running'
+                                ? 'animate-pulse text-gray-300'
+                                : 'text-red-400'
+                          }>
+                          {run.status}
+                        </span>
+                        {run.endedAt !== null && ` · ${describeDuration(run.startedAt, run.endedAt)}`}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onOpenRun(run.sessionId)}
+                        className="shrink-0 text-gray-400 underline hover:text-white">
+                        View trace
+                      </button>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           );

@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { FiSettings, FiClock } from 'react-icons/fi';
+import { FiSettings, FiClock, FiHelpCircle } from 'react-icons/fi';
 import { PiPlusBold, PiGraduationCapBold, PiBugBold } from 'react-icons/pi';
 import { GrHistory } from 'react-icons/gr';
-import { type Message, Actors, chatHistoryStore, trajectoryStore } from '@extension/storage';
+import { type Message, Actors, chatHistoryStore, trajectoryStore, onboardingStore } from '@extension/storage';
 import favoritesStorage, { type FavoritePrompt } from '@extension/storage/lib/prompt/favorites';
 import { t } from '@extension/i18n';
 import MessageList from './components/MessageList';
@@ -11,6 +11,7 @@ import ChatHistoryList from './components/ChatHistoryList';
 import BookmarkList from './components/BookmarkList';
 import ScheduleList from './components/ScheduleList';
 import ReportDialog from './components/ReportDialog';
+import OnboardingDialog from './components/OnboardingDialog';
 import { EventType, type AgentEvent, ExecutionState } from './types/event';
 import './SidePanel.css';
 
@@ -44,6 +45,8 @@ const SidePanel = () => {
   const [skillOffer, setSkillOffer] = useState(false);
   // Bug-report dialog for the current session (user-initiated only)
   const [showReport, setShowReport] = useState(false);
+  // First-run tour: auto-opens once (onboardingStore flag), replayable via "?"
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
   const portRef = useRef<chrome.runtime.Port | null>(null);
   const heartbeatIntervalRef = useRef<number | null>(null);
@@ -691,6 +694,21 @@ const SidePanel = () => {
     loadFavorites();
   }, []);
 
+  // First-run tour: open automatically until the user has been through it once
+  useEffect(() => {
+    onboardingStore
+      .get()
+      .then(seen => {
+        if (!seen) setShowOnboarding(true);
+      })
+      .catch(error => console.error('Failed to read onboarding flag:', error));
+  }, []);
+
+  const closeOnboarding = useCallback(() => {
+    setShowOnboarding(false);
+    onboardingStore.markSeen().catch(error => console.error('Failed to persist onboarding flag:', error));
+  }, []);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -787,6 +805,7 @@ const SidePanel = () => {
         {showReport && currentSessionId && (
           <ReportDialog sessionId={currentSessionId} onClose={() => setShowReport(false)} />
         )}
+        {showOnboarding && <OnboardingDialog onClose={closeOnboarding} />}
         <header className="header relative">
           <div className="header-logo">
             {showHistory || showSchedules ? (
@@ -858,6 +877,16 @@ const SidePanel = () => {
             )}
             <button
               type="button"
+              onClick={() => setShowOnboarding(true)}
+              onKeyDown={e => e.key === 'Enter' && setShowOnboarding(true)}
+              className="header-icon cursor-pointer text-[#E8E8E8] hover:text-[#FFFFFF]"
+              aria-label="What can Koretex do? Replay the intro tour"
+              title="What can Koretex do? Replay the intro tour"
+              tabIndex={0}>
+              <FiHelpCircle size={20} />
+            </button>
+            <button
+              type="button"
               onClick={() => chrome.runtime.openOptionsPage()}
               onKeyDown={e => e.key === 'Enter' && chrome.runtime.openOptionsPage()}
               className={`header-icon ${isDarkMode ? 'text-[#E8E8E8] hover:text-[#FFFFFF]' : 'text-[#E8E8E8] hover:text-[#FFFFFF]'} cursor-pointer`}
@@ -869,7 +898,12 @@ const SidePanel = () => {
         </header>
         {showSchedules ? (
           <div className="flex-1 overflow-hidden">
-            <ScheduleList />
+            <ScheduleList
+              onOpenRun={sessionId => {
+                setShowSchedules(false);
+                handleSessionSelect(sessionId);
+              }}
+            />
           </div>
         ) : showHistory ? (
           <div className="flex-1 overflow-hidden">

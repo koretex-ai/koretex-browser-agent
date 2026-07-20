@@ -1,8 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { chatSettingsStore, DEFAULT_CHAT_SETTINGS } from '@extension/storage';
 
+/** Which settings tab this render shows — the component stays mounted across
+ * tab switches so unsaved edits survive; inactive sections are just hidden. */
+export type ModelSettingsSection = 'cloud' | 'local' | 'privacy';
+
 interface ModelSettingsProps {
   isDarkMode?: boolean;
+  section: ModelSettingsSection;
 }
 
 type ConnectionStatus =
@@ -11,7 +16,7 @@ type ConnectionStatus =
   | { state: 'ok'; models: string[] }
   | { state: 'error'; message: string };
 
-export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
+export const ModelSettings = ({ isDarkMode = false, section }: ModelSettingsProps) => {
   const [baseUrl, setBaseUrl] = useState(DEFAULT_CHAT_SETTINGS.baseUrl);
   const [model, setModel] = useState(DEFAULT_CHAT_SETTINGS.model);
   const [grounderModel, setGrounderModel] = useState(DEFAULT_CHAT_SETTINGS.grounderModel);
@@ -89,267 +94,163 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
     isDarkMode ? 'border-[#3D3D3D]/50 bg-[#141414] text-gray-200' : 'border-gray-300 bg-white text-gray-800'
   }`;
   const labelClass = `mb-1 block text-sm font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`;
+  const hintClass = `mt-1 text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`;
+  const headingClass = `text-lg font-semibold ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`;
+  const introClass = `text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`;
 
   return (
-    <section className="space-y-6">
-      <div>
-        <h2 className={`mb-1 text-lg font-semibold ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>Local model</h2>
-        <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-          The chat runs entirely on your machine through Ollama. Nothing leaves your computer.
-        </p>
-      </div>
-
-      <div>
-        <label htmlFor="ollama-url" className={labelClass}>
-          Ollama URL
-        </label>
-        <div className="flex gap-2">
-          <input
-            id="ollama-url"
-            type="text"
-            value={baseUrl}
-            onChange={e => setBaseUrl(e.target.value)}
-            placeholder={DEFAULT_CHAT_SETTINGS.baseUrl}
-            className={inputClass}
-          />
-          <button
-            type="button"
-            onClick={() => testConnection(baseUrl.replace(/\/$/, ''))}
-            className="shrink-0 rounded-md bg-[#E8E8E8] px-3 py-1 text-sm font-medium text-[#000000] transition-colors hover:bg-[#FFFFFF]">
-            Test
-          </button>
-        </div>
-        {connection.state === 'testing' && (
-          <p className={`mt-1 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Connecting…</p>
-        )}
-        {connection.state === 'ok' && (
-          <p className="mt-1 text-sm text-[#E8E8E8]">
-            Connected — {connection.models.length} model{connection.models.length === 1 ? '' : 's'} available
+    <section>
+      {/* ---- CLOUD ---- */}
+      <div className={section === 'cloud' ? 'space-y-6' : 'hidden'}>
+        <div>
+          <div className="mb-1 flex items-center justify-between">
+            <h2 className={headingClass}>Cloud</h2>
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={orchestratorEnabled}
+                onChange={e => setOrchestratorEnabled(e.target.checked)}
+                className="size-4 accent-[#E8E8E8]"
+              />
+              <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>Enabled</span>
+            </label>
+          </div>
+          <p className={introClass}>
+            Works with any OpenAI-compatible endpoint — paste your API key below and you&apos;re set (OpenRouter by
+            default). PRIVACY: the navigator model receives a SCREENSHOT of the active tab every step — including
+            whatever is visible in your logged-in sessions. All cloud calls request no-data-retention routing, but the
+            images do leave your machine.
           </p>
-        )}
-        {connection.state === 'error' && <p className="mt-1 text-sm text-red-500">{connection.message}</p>}
-      </div>
+        </div>
 
-      <div>
-        <label htmlFor="chat-model" className={labelClass}>
-          Local reader model
-        </label>
-        {availableModels.length > 0 ? (
-          <select id="chat-model" value={model} onChange={e => setModel(e.target.value)} className={inputClass}>
-            {!availableModels.includes(model) && <option value={model}>{model} (not installed)</option>}
-            {availableModels.map(name => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
-        ) : (
+        <div>
+          <label htmlFor="orch-key" className={labelClass}>
+            API key
+          </label>
           <input
-            id="chat-model"
-            type="text"
-            value={model}
-            onChange={e => setModel(e.target.value)}
-            placeholder={DEFAULT_CHAT_SETTINGS.model}
+            id="orch-key"
+            type="password"
+            value={orchestratorApiKey}
+            onChange={e => setOrchestratorApiKey(e.target.value)}
+            placeholder="sk-or-…"
+            autoComplete="off"
             className={inputClass}
           />
-        )}
-        <p className={`mt-1 text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-          Bulk-reads page text for extract/harvest steps — full pages never leave your machine, only compact digests
-          do. Also answers plain chat when the cloud orchestrator is off.
-        </p>
-      </div>
+          <p className={hintClass}>
+            The only required field — get one at openrouter.ai, or use any compatible provider.
+          </p>
+        </div>
 
-      <div>
-        <label htmlFor="grounder-model" className={labelClass}>
-          Vision grounder model
-        </label>
-        {availableModels.length > 0 ? (
-          <select
-            id="grounder-model"
-            value={grounderModel}
-            onChange={e => setGrounderModel(e.target.value)}
-            className={inputClass}>
-            {!availableModels.includes(grounderModel) && (
-              <option value={grounderModel}>{grounderModel} (not installed)</option>
-            )}
-            {availableModels.map(name => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
-        ) : (
+        <div>
+          <label htmlFor="orch-url" className={labelClass}>
+            OpenAI-compatible endpoint
+          </label>
           <input
-            id="grounder-model"
+            id="orch-url"
             type="text"
-            value={grounderModel}
-            onChange={e => setGrounderModel(e.target.value)}
-            placeholder={DEFAULT_CHAT_SETTINGS.grounderModel}
+            value={orchestratorBaseUrl}
+            onChange={e => setOrchestratorBaseUrl(e.target.value)}
+            placeholder={DEFAULT_CHAT_SETTINGS.orchestratorBaseUrl}
             className={inputClass}
           />
-        )}
-        <p className={`mt-1 text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-          Turns element descriptions (&quot;the Post button inside the composer&quot;) into click coordinates from a
-          screenshot — how clicks land on canvas UIs and ambiguous labels. Runs locally; grounding never goes to the
-          cloud.
-        </p>
-      </div>
+        </div>
 
-      <div className={`border-t pt-6 ${isDarkMode ? 'border-[#3D3D3D]/40' : 'border-gray-200'}`}>
-        <div className="mb-1 flex items-center justify-between">
-          <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-            Cloud orchestrator
-          </h2>
-          <label className="flex cursor-pointer items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={orchestratorEnabled}
-              onChange={e => setOrchestratorEnabled(e.target.checked)}
-              className="size-4 accent-[#E8E8E8]"
-            />
-            <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>Enabled</span>
+        <div>
+          <label htmlFor="orch-model" className={labelClass}>
+            Orchestrator model
           </label>
+          <input
+            id="orch-model"
+            type="text"
+            value={orchestratorModel}
+            onChange={e => setOrchestratorModel(e.target.value)}
+            placeholder={DEFAULT_CHAT_SETTINGS.orchestratorModel}
+            className={inputClass}
+          />
+          <div className="mt-2 flex flex-wrap gap-2">
+            {[
+              { label: 'GLM-5.2 (recommended)', value: 'z-ai/glm-5.2' },
+              { label: 'DeepSeek V4 Flash (budget)', value: 'deepseek/deepseek-v4-flash' },
+              { label: 'Kimi K2.6', value: 'moonshotai/kimi-k2.6' },
+            ].map(preset => (
+              <button
+                key={preset.value}
+                type="button"
+                onClick={() => setOrchestratorModel(preset.value)}
+                className={`rounded-md border px-2 py-1 text-xs transition-colors ${
+                  orchestratorModel === preset.value
+                    ? 'border-[#E8E8E8] text-[#E8E8E8]'
+                    : isDarkMode
+                      ? 'border-[#3D3D3D]/50 text-gray-400 hover:text-gray-200'
+                      : 'border-gray-300 text-gray-500 hover:text-gray-700'
+                }`}>
+                {preset.label}
+              </button>
+            ))}
+          </div>
         </div>
-        <p className={`mb-4 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-          A cloud navigator judges each step&apos;s outcome and decides the next one; local models still do the
-          clicking, typing, and bulk reading. PRIVACY: the navigator model receives a SCREENSHOT of the active tab
-          every step — including whatever is visible in your logged-in sessions. All cloud calls request
-          no-data-retention routing (providers that neither train on nor store prompts), but the images do leave your
-          machine. Without an API key the agent runs fully local and screenshots never leave.
-        </p>
 
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="orch-url" className={labelClass}>
-              OpenAI-compatible endpoint
-            </label>
-            <input
-              id="orch-url"
-              type="text"
-              value={orchestratorBaseUrl}
-              onChange={e => setOrchestratorBaseUrl(e.target.value)}
-              placeholder={DEFAULT_CHAT_SETTINGS.orchestratorBaseUrl}
-              className={inputClass}
-            />
-          </div>
-
-          <div>
-            <label htmlFor="orch-key" className={labelClass}>
-              API key
-            </label>
-            <input
-              id="orch-key"
-              type="password"
-              value={orchestratorApiKey}
-              onChange={e => setOrchestratorApiKey(e.target.value)}
-              placeholder="sk-or-…"
-              autoComplete="off"
-              className={inputClass}
-            />
-          </div>
-
-          <div>
-            <label htmlFor="orch-model" className={labelClass}>
-              Orchestrator model
-            </label>
-            <input
-              id="orch-model"
-              type="text"
-              value={orchestratorModel}
-              onChange={e => setOrchestratorModel(e.target.value)}
-              placeholder={DEFAULT_CHAT_SETTINGS.orchestratorModel}
-              className={inputClass}
-            />
-            <div className="mt-2 flex flex-wrap gap-2">
-              {[
-                { label: 'GLM-5.2 (recommended)', value: 'z-ai/glm-5.2' },
-                { label: 'DeepSeek V4 Flash (budget)', value: 'deepseek/deepseek-v4-flash' },
-                { label: 'Kimi K2.6', value: 'moonshotai/kimi-k2.6' },
-              ].map(preset => (
-                <button
-                  key={preset.value}
-                  type="button"
-                  onClick={() => setOrchestratorModel(preset.value)}
-                  className={`rounded-md border px-2 py-1 text-xs transition-colors ${
-                    orchestratorModel === preset.value
-                      ? 'border-[#E8E8E8] text-[#E8E8E8]'
-                      : isDarkMode
-                        ? 'border-[#3D3D3D]/50 text-gray-400 hover:text-gray-200'
-                        : 'border-gray-300 text-gray-500 hover:text-gray-700'
-                  }`}>
-                  {preset.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <label htmlFor="navigator-model" className={labelClass}>
-              Navigator model (multimodal — judges each step from a screenshot)
-            </label>
-            <input
-              id="navigator-model"
-              type="text"
-              value={navigatorModel}
-              onChange={e => setNavigatorModel(e.target.value)}
-              placeholder={DEFAULT_CHAT_SETTINGS.navigatorModel}
-              className={inputClass}
-            />
-            <div className="mt-2 flex flex-wrap gap-2">
-              {[
-                { label: 'MiMo-V2.5 (recommended)', value: 'xiaomi/mimo-v2.5' },
-                { label: 'Qwen3.5-122B', value: 'qwen/qwen3.5-122b-a10b' },
-                { label: 'GLM-4.6V', value: 'z-ai/glm-4.6v' },
-                { label: 'GPT-5.6 Luna (control)', value: 'openai/gpt-5.6-luna' },
-              ].map(preset => (
-                <button
-                  key={preset.value}
-                  type="button"
-                  onClick={() => setNavigatorModel(preset.value)}
-                  className={`rounded-md border px-2 py-1 text-xs transition-colors ${
-                    navigatorModel === preset.value
-                      ? 'border-[#E8E8E8] text-[#E8E8E8]'
-                      : isDarkMode
-                        ? 'border-[#3D3D3D]/50 text-gray-400 hover:text-gray-200'
-                        : 'border-gray-300 text-gray-500 hover:text-gray-700'
-                  }`}>
-                  {preset.label}
-                </button>
-              ))}
-            </div>
-            <p className={`mt-1 text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-              This is the model that sees screenshots. Leave empty to use the orchestrator model (it must then be
-              multimodal).
-            </p>
-          </div>
-
-        </div>
-      </div>
-
-      <div className={`border-t pt-6 ${isDarkMode ? 'border-[#3D3D3D]/40' : 'border-gray-200'}`}>
-        <div className="mb-1 flex items-center justify-between">
-          <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-            Cloud-only mode (no local models)
-          </h2>
-          <label className="flex cursor-pointer items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={cloudOnly}
-              onChange={e => setCloudOnly(e.target.checked)}
-              className="size-4 accent-[#E8E8E8]"
-            />
-            <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>Enabled</span>
+        <div>
+          <label htmlFor="navigator-model" className={labelClass}>
+            Navigator model (multimodal — judges each step from a screenshot)
           </label>
+          <input
+            id="navigator-model"
+            type="text"
+            value={navigatorModel}
+            onChange={e => setNavigatorModel(e.target.value)}
+            placeholder={DEFAULT_CHAT_SETTINGS.navigatorModel}
+            className={inputClass}
+          />
+          <div className="mt-2 flex flex-wrap gap-2">
+            {[
+              { label: 'MiMo-V2.5 (recommended)', value: 'xiaomi/mimo-v2.5' },
+              { label: 'Qwen3.5-122B', value: 'qwen/qwen3.5-122b-a10b' },
+              { label: 'GLM-4.6V', value: 'z-ai/glm-4.6v' },
+              { label: 'GPT-5.6 Luna (control)', value: 'openai/gpt-5.6-luna' },
+            ].map(preset => (
+              <button
+                key={preset.value}
+                type="button"
+                onClick={() => setNavigatorModel(preset.value)}
+                className={`rounded-md border px-2 py-1 text-xs transition-colors ${
+                  navigatorModel === preset.value
+                    ? 'border-[#E8E8E8] text-[#E8E8E8]'
+                    : isDarkMode
+                      ? 'border-[#3D3D3D]/50 text-gray-400 hover:text-gray-200'
+                      : 'border-gray-300 text-gray-500 hover:text-gray-700'
+                }`}>
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <p className={hintClass}>
+            This is the model that sees screenshots. Leave empty to use the orchestrator model (it must then be
+            multimodal).
+          </p>
         </div>
-        <p className={`mb-4 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-          Run everything through the cloud endpoint above — no Ollama required. Page reading and click grounding move
-          to cloud models, which means full page text also leaves your machine (same no-retention routing). The local
-          model settings above are ignored while this is on.
-        </p>
 
-        {cloudOnly && (
-          <div className="space-y-4">
-            <div>
+        <div>
+          <div className="mb-1 flex items-center justify-between">
+            <h3 className={`text-base font-semibold ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+              Cloud-only mode
+            </h3>
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={cloudOnly}
+                onChange={e => setCloudOnly(e.target.checked)}
+                className="size-4 accent-[#E8E8E8]"
+              />
+              <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>Enabled</span>
+            </label>
+          </div>
+          <p className={introClass}>
+            Everything runs through the endpoint above — no Ollama required (the default). Turn off to read pages and
+            ground clicks with the local models from the Local tab; full page text then stays on your machine.
+          </p>
+          {cloudOnly && (
+            <div className="mt-4">
               <label htmlFor="cloud-reader" className={labelClass}>
                 Cloud reader model
               </label>
@@ -361,32 +262,150 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
                 placeholder={DEFAULT_CHAT_SETTINGS.cloudReaderModel}
                 className={inputClass}
               />
-              <p className={`mt-1 text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+              <p className={hintClass}>
                 Bulk-reads page text for extract/harvest steps — the default works well; any cheap text model can be
                 substituted. Click grounding uses the navigator model.
               </p>
             </div>
+          )}
+        </div>
+      </div>
 
-            <div>
-              <label className="flex cursor-pointer items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={piiGuard}
-                  onChange={e => setPiiGuard(e.target.checked)}
-                  className="size-4 accent-[#E8E8E8]"
-                />
-                <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>PII guard (recommended)</span>
-              </label>
-              <p className={`mt-1 text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                Emails, phone numbers, card numbers and SSNs in outgoing text are replaced with tokens before leaving
-                your machine; the real values are substituted back locally when the agent types them. Does not cover
-                screenshots or names in ordinary page content.
-              </p>
-            </div>
+      {/* ---- LOCAL ---- */}
+      <div className={section === 'local' ? 'space-y-6' : 'hidden'}>
+        <div>
+          <h2 className={`mb-1 ${headingClass}`}>Local models</h2>
+          <p className={introClass}>
+            Used when Cloud-only mode (Cloud tab) is off: page reading and click grounding run on your machine through
+            Ollama, and full page text never leaves it.
+          </p>
+        </div>
+
+        <div>
+          <label htmlFor="ollama-url" className={labelClass}>
+            Ollama URL
+          </label>
+          <div className="flex gap-2">
+            <input
+              id="ollama-url"
+              type="text"
+              value={baseUrl}
+              onChange={e => setBaseUrl(e.target.value)}
+              placeholder={DEFAULT_CHAT_SETTINGS.baseUrl}
+              className={inputClass}
+            />
+            <button
+              type="button"
+              onClick={() => testConnection(baseUrl.replace(/\/$/, ''))}
+              className="shrink-0 rounded-md bg-[#E8E8E8] px-3 py-1 text-sm font-medium text-[#000000] transition-colors hover:bg-[#FFFFFF]">
+              Test
+            </button>
           </div>
-        )}
+          {connection.state === 'testing' && (
+            <p className={`mt-1 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Connecting…</p>
+          )}
+          {connection.state === 'ok' && (
+            <p className="mt-1 text-sm text-[#E8E8E8]">
+              Connected — {connection.models.length} model{connection.models.length === 1 ? '' : 's'} available
+            </p>
+          )}
+          {connection.state === 'error' && <p className="mt-1 text-sm text-red-500">{connection.message}</p>}
+        </div>
 
-        <div className="mt-4">
+        <div>
+          <label htmlFor="chat-model" className={labelClass}>
+            Local reader model
+          </label>
+          {availableModels.length > 0 ? (
+            <select id="chat-model" value={model} onChange={e => setModel(e.target.value)} className={inputClass}>
+              {!availableModels.includes(model) && <option value={model}>{model} (not installed)</option>}
+              {availableModels.map(name => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              id="chat-model"
+              type="text"
+              value={model}
+              onChange={e => setModel(e.target.value)}
+              placeholder={DEFAULT_CHAT_SETTINGS.model}
+              className={inputClass}
+            />
+          )}
+          <p className={hintClass}>
+            Bulk-reads page text for extract/harvest steps — full pages never leave your machine, only compact digests
+            do. Also answers plain chat when the cloud orchestrator is off.
+          </p>
+        </div>
+
+        <div>
+          <label htmlFor="grounder-model" className={labelClass}>
+            Vision grounder model
+          </label>
+          {availableModels.length > 0 ? (
+            <select
+              id="grounder-model"
+              value={grounderModel}
+              onChange={e => setGrounderModel(e.target.value)}
+              className={inputClass}>
+              {!availableModels.includes(grounderModel) && (
+                <option value={grounderModel}>{grounderModel} (not installed)</option>
+              )}
+              {availableModels.map(name => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              id="grounder-model"
+              type="text"
+              value={grounderModel}
+              onChange={e => setGrounderModel(e.target.value)}
+              placeholder={DEFAULT_CHAT_SETTINGS.grounderModel}
+              className={inputClass}
+            />
+          )}
+          <p className={hintClass}>
+            Turns element descriptions (&quot;the Post button inside the composer&quot;) into click coordinates from a
+            screenshot — how clicks land on canvas UIs and ambiguous labels. Runs locally; grounding never goes to the
+            cloud.
+          </p>
+        </div>
+      </div>
+
+      {/* ---- PRIVACY ---- */}
+      <div className={section === 'privacy' ? 'space-y-6' : 'hidden'}>
+        <div>
+          <h2 className={`mb-1 ${headingClass}`}>Privacy</h2>
+          <p className={introClass}>
+            Controls over what leaves your machine when cloud models are in use. All cloud calls already request
+            no-data-retention routing (providers that neither train on nor store prompts).
+          </p>
+        </div>
+
+        <div>
+          <label className="flex cursor-pointer items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={piiGuard}
+              onChange={e => setPiiGuard(e.target.checked)}
+              className="size-4 accent-[#E8E8E8]"
+            />
+            <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>PII guard (recommended)</span>
+          </label>
+          <p className={hintClass}>
+            In cloud-only mode: emails, phone numbers, card numbers and SSNs in outgoing text are replaced with tokens
+            before leaving your machine; the real values are substituted back locally when the agent types them. Does
+            not cover screenshots or names in ordinary page content.
+          </p>
+        </div>
+
+        <div>
           <label htmlFor="sensitive-sites" className={labelClass}>
             Sensitive sites (ask before working there)
           </label>
@@ -398,14 +417,14 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
             placeholder={DEFAULT_CHAT_SETTINGS.sensitiveSites}
             className={inputClass}
           />
-          <p className={`mt-1 text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+          <p className={hintClass}>
             Comma-separated URL fragments. On a matching site the agent pauses and asks before continuing, because
             screenshots of it would go to the cloud model.
           </p>
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="mt-6 flex items-center gap-3">
         <button
           type="button"
           onClick={handleSave}
