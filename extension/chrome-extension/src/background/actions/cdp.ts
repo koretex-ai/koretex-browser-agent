@@ -17,10 +17,11 @@ const CDP_COMMAND_TIMEOUT_MS = 15_000;
  * pipeline. Input.insertText / Input.dispatchKeyEvent inject at that level,
  * indistinguishable from a physical keyboard.
  *
- * Scope: KEYBOARD ONLY. CDP mouse input is deliberately not used — attaching
- * the debugger shows an infobar that reflows the viewport, which would shift
- * coordinates captured before attach (the vision grounder's click space).
- * Keyboard input is coordinate-free and immune to that.
+ * Scope: KEYBOARD + SCREENSHOTS. CDP mouse input is deliberately not used —
+ * attaching the debugger shows an infobar that reflows the viewport, which
+ * would shift coordinates captured before attach (the vision grounder's
+ * click space). Keyboard input is coordinate-free and immune to that;
+ * screenshots (cdpCaptureScreenshot) are reads and equally immune.
  *
  * Lifecycle: attach lazily on first use, STAY attached (a stable infobar
  * means stable page geometry for perception), detach at task end.
@@ -43,6 +44,32 @@ async function ensureAttached(tabId: number): Promise<void> {
   }
   attached.add(tabId);
   logger.info('debugger attached to tab', tabId);
+}
+
+/** Whether the debugger currently holds this tab (agent task in flight). */
+export function isCdpAttached(tabId: number): boolean {
+  return attached.has(tabId);
+}
+
+/**
+ * Screenshot via the debugger — the renderer composites the frame ON
+ * DEMAND, so capture works with the window unfocused, occluded, or
+ * MINIMIZED, and it photographs THIS tab rather than "whatever the window
+ * currently shows" (chrome.tabs.captureVisibleTab needs the window drawn on
+ * screen AND captures its active tab — a user switching tabs mid-run gets
+ * photographed instead of the agent's page). Returns a JPEG data URL sized
+ * like a visible-tab capture (viewport at device pixels), so downstream
+ * downscaling and grounder coordinate math are unchanged.
+ */
+export async function cdpCaptureScreenshot(tabId: number, quality: number): Promise<string> {
+  await ensureAttached(tabId);
+  const result = (await withTimeout(
+    chrome.debugger.sendCommand({ tabId }, 'Page.captureScreenshot', { format: 'jpeg', quality }),
+    CDP_COMMAND_TIMEOUT_MS,
+    'CDP Page.captureScreenshot',
+  )) as { data?: string } | undefined;
+  if (!result?.data) throw new Error('Page.captureScreenshot returned no image data');
+  return `data:image/jpeg;base64,${result.data}`;
 }
 
 /** Detach at task end (also safe to call when never attached). */
@@ -149,10 +176,38 @@ const NAMED_KEYS: Record<string, KeySpec> = {
 // around the grid ("Founder & Managing Director" overwrote the row above;
 // "D'Souza" split across two columns — live run 2026-07-16).
 const PUNCTUATION_KEYCODES: Record<string, number> = {
-  '!': 49, '@': 50, '#': 51, '$': 52, '%': 53, '^': 54, '&': 55, '*': 56, '(': 57, ')': 48,
-  '-': 189, _: 189, '=': 187, '+': 187, '[': 219, '{': 219, ']': 221, '}': 221, '\\': 220, '|': 220,
-  ';': 186, ':': 186, "'": 222, '"': 222, ',': 188, '<': 188, '.': 190, '>': 190, '/': 191, '?': 191,
-  '`': 192, '~': 192,
+  '!': 49,
+  '@': 50,
+  '#': 51,
+  $: 52,
+  '%': 53,
+  '^': 54,
+  '&': 55,
+  '*': 56,
+  '(': 57,
+  ')': 48,
+  '-': 189,
+  _: 189,
+  '=': 187,
+  '+': 187,
+  '[': 219,
+  '{': 219,
+  ']': 221,
+  '}': 221,
+  '\\': 220,
+  '|': 220,
+  ';': 186,
+  ':': 186,
+  "'": 222,
+  '"': 222,
+  ',': 188,
+  '<': 188,
+  '.': 190,
+  '>': 190,
+  '/': 191,
+  '?': 191,
+  '`': 192,
+  '~': 192,
 };
 
 function keySpecFor(rawKey: string): KeySpec {

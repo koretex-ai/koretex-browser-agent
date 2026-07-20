@@ -2,6 +2,7 @@ import type { PerceptionSnapshot } from '@extension/storage';
 import { createLogger } from '../log';
 import { withTimeout } from '../net';
 import { extractInteractiveElements, extractPageText, removeHighlights } from './pageScript';
+import { isCdpAttached, cdpCaptureScreenshot } from '../actions/cdp';
 import type { ExtractedPageState } from './pageScript';
 
 const logger = createLogger('perception');
@@ -77,16 +78,37 @@ async function downscaleDataUrl(dataUrl: string, maxWidth: number, quality: numb
   return { dataUrl: await blobToDataUrl(blob), width, height };
 }
 
-export async function captureScreenshot(
-  tabId: number,
-  opts: { maxWidth?: number; quality?: number } = {},
-): Promise<Screenshot> {
+// Two capture channels. CDP (Page.captureScreenshot) whenever an agent task
+// already holds a debugger attachment (stepwise attaches at run start via
+// armDialogGuard): the renderer composites the frame on demand, so capture
+// keeps working with the window unfocused or MINIMIZED — required for
+// scheduled runs — and always photographs the AGENT'S tab, even if the user
+// fronted a different tab in that window. captureVisibleTab otherwise
+// (quick commands, chat, the local loop, and any run where attach failed —
+// e.g. DevTools open on the tab): identical to the historical behavior, and
+// never shows the debugger infobar outside agent runs. A CDP failure falls
+// back to the visible-tab capture rather than blinding the run.
+async function captureRawScreenshot(tabId: number): Promise<string> {
+  if (isCdpAttached(tabId)) {
+    try {
+      return await cdpCaptureScreenshot(tabId, 85);
+    } catch (error) {
+      logger.warning('CDP screenshot failed, falling back to captureVisibleTab:', error);
+    }
+  }
   const tab = await chrome.tabs.get(tabId);
-  const raw = await withTimeout(
+  return withTimeout(
     chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 85 }),
     PERCEPTION_OP_TIMEOUT_MS,
     'capturing a screenshot',
   );
+}
+
+export async function captureScreenshot(
+  tabId: number,
+  opts: { maxWidth?: number; quality?: number } = {},
+): Promise<Screenshot> {
+  const raw = await captureRawScreenshot(tabId);
   return downscaleDataUrl(raw, opts.maxWidth ?? MAX_SCREENSHOT_WIDTH, opts.quality ?? SCREENSHOT_JPEG_QUALITY);
 }
 
