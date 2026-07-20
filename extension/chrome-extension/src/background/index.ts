@@ -97,9 +97,9 @@ chrome.runtime.onConnect.addListener(port => {
                 Actors.SYSTEM,
                 'step.ok',
                 message.taskId,
-                '🪟 This task runs in a separate agent window — opening it now. Keep using your current window; the trace also shows in the agent window’s panel.',
+                '🪟 This task runs in a separate agent window, opening in a moment — keep using your current window. A small trace window opens next to it so you can watch the steps live.',
               );
-              await sleep(1200);
+              await sleep(3000);
               const acquired = await acquireTaskTab(message.taskId);
               // The loop decides whether the task needs the browser
               // (a 'respond' decision falls back to plain streaming chat)

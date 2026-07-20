@@ -26,14 +26,55 @@ const logger = createLogger('taskWindow');
  */
 
 let agentWindowId: number | null = null;
+let viewerWindowId: number | null = null;
 const sessionTabs = new Map<string, { windowId: number; tabId: number }>();
 
 chrome.windows.onRemoved.addListener(windowId => {
-  if (windowId === agentWindowId) agentWindowId = null;
+  if (windowId === agentWindowId) {
+    agentWindowId = null;
+    // The agent window is gone — its companion trace viewer has nothing to
+    // narrate; close it too
+    if (viewerWindowId !== null) {
+      chrome.windows.remove(viewerWindowId).catch(() => {});
+      viewerWindowId = null;
+    }
+  }
+  if (windowId === viewerWindowId) viewerWindowId = null;
   for (const [sessionId, entry] of sessionTabs) {
     if (entry.windowId === windowId) sessionTabs.delete(sessionId);
   }
 });
+
+/**
+ * Companion TRACE VIEWER: the panel page in a small popup window docked to
+ * the agent window's right edge. chrome.sidePanel.open() refuses to run
+ * without a user gesture (confirmed live 2026-07-20 — the panel never
+ * opened), so the trace gets its own popup instead: execution events
+ * broadcast to every connected panel (index.ts), and this one is always
+ * there to show them next to the tabs being driven.
+ */
+async function ensureTraceViewer(agentWin: chrome.windows.Window): Promise<void> {
+  if (viewerWindowId !== null) {
+    const alive = await chrome.windows.get(viewerWindowId).catch(() => null);
+    if (alive) return;
+    viewerWindowId = null;
+  }
+  const viewer = await chrome.windows
+    .create({
+      url: chrome.runtime.getURL('side-panel/index.html'),
+      type: 'popup',
+      focused: false,
+      width: 420,
+      height: agentWin.height ?? 900,
+      left: (agentWin.left ?? 0) + (agentWin.width ?? 1290),
+      top: agentWin.top ?? 0,
+    })
+    .catch(error => {
+      logger.warning('could not open the trace viewer window', error);
+      return null;
+    });
+  if (viewer?.id !== undefined) viewerWindowId = viewer.id;
+}
 
 export type TaskTabAcquisition = { tabId: number; created: 'window' | 'tab' | 'reused' };
 
@@ -58,6 +99,7 @@ export async function acquireTaskTab(sessionId: string): Promise<TaskTabAcquisit
         .catch(() => null);
       if (tab?.id !== undefined) {
         sessionTabs.set(sessionId, { windowId: agentWindowId, tabId: tab.id });
+        await ensureTraceViewer(win);
         return { tabId: tab.id, created: 'tab' };
       }
     }
@@ -75,12 +117,6 @@ export async function acquireTaskTab(sessionId: string): Promise<TaskTabAcquisit
   if (win?.id === undefined || tabId === undefined) return null;
   agentWindowId = win.id;
   sessionTabs.set(sessionId, { windowId: win.id, tabId });
-  // Open the side panel IN the agent window so the trace is watchable right
-  // next to the pages being driven (execution events broadcast to every
-  // connected panel). Chrome may refuse without a user gesture — then the
-  // user can open it themselves from the extension icon; not fatal.
-  await chrome.sidePanel
-    .open({ windowId: win.id })
-    .catch(error => logger.info('side panel not opened in agent window (no user gesture):', String(error)));
+  await ensureTraceViewer(win);
   return { tabId, created: 'window' };
 }
