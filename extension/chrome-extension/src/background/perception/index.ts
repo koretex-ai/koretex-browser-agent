@@ -21,6 +21,11 @@ const SCREENSHOT_JPEG_QUALITY = 0.7;
 // space and every click lands progressively below/right of the target
 // (measured 2026-07-10: +180px y-error at 1024w vs <=10px at 1280w).
 export const GROUNDER_SCREENSHOT_OPTS = { maxWidth: 1280, quality: 0.85 };
+// Sweep vision-fallback reads transcribe dense small text — the most
+// resolution-hungry task in the system — and only run on the rare screens
+// whose DOM text yields nothing, so the extra image tokens are paid
+// sparingly (user decision 2026-07-23).
+export const SWEEP_SCREENSHOT_OPTS = { maxWidth: 1600, quality: 0.9 };
 
 // Page-text budgets: the snapshot carries a digest every step (planner
 // observation); the extract action re-reads with a much larger budget.
@@ -177,7 +182,19 @@ export async function capturePageState(tabId: number, showHighlights: boolean): 
  * unless the cloud-executor fallback is enabled). */
 export async function capturePageText(tabId: number): Promise<string> {
   await waitForTabLoad(tabId);
-  return runInPage(tabId, extractPageText, EXTRACT_PAGE_TEXT_CHARS);
+  // includeLinks: extract/harvest reads carry a label→URL appendix so
+  // objectives asking for link destinations (websites, article URLs) are
+  // answerable; the perception snapshot path stays link-free (digest budget)
+  return runInPage(tabId, extractPageText, EXTRACT_PAGE_TEXT_CHARS, true, true);
+}
+
+// One screenful of DOM text — what the current viewport shows, nothing
+// else. The sweep's per-screen reads use this: DOM text is lossless (no
+// OCR-class misreads) and a few hundred tokens per screen vs ~1-2k for a
+// screenshot, so text is the default channel and vision the fallback.
+export async function captureViewportText(tabId: number): Promise<string> {
+  await waitForTabLoad(tabId);
+  return runInPage(tabId, extractPageText, 6000, false, false, true);
 }
 
 export async function clearHighlights(tabId: number): Promise<void> {

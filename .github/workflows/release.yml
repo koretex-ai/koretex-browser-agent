@@ -1,0 +1,97 @@
+# Chrome Web Store release pipeline.
+#
+# Releasing is a deliberate act, not a side effect of merging:
+#   1. Bump "version" in extension/chrome-extension/package.json (feeds manifest.js)
+#   2. Commit, tag it vX.Y.Z, push the tag        → this workflow builds, uploads,
+#      and submits for store review (auto-publishes when review passes)
+#
+# Manual runs (workflow_dispatch) can target trusted testers or skip publishing
+# (upload-as-draft) for a one-click-away release.
+#
+# Required repo secrets (Chrome Web Store Publish API OAuth):
+#   CHROME_EXTENSION_ID, CHROME_CLIENT_ID, CHROME_CLIENT_SECRET, CHROME_REFRESH_TOKEN
+# Setup: https://github.com/fregante/chrome-webstore-upload-keys
+
+name: Release to Chrome Web Store
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Submit for review (off = upload as draft only)'
+        type: boolean
+        default: true
+      target:
+        description: 'Publish audience'
+        type: choice
+        options: [default, trustedTesters]
+        default: default
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+
+      - name: Enable pnpm via corepack
+        run: corepack enable
+
+      - name: Resolve version and guard tag match
+        id: version
+        run: |
+          VERSION=$(node -p "require('./chrome-extension/package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/v}"
+            if [[ "$TAG" != "$VERSION" ]]; then
+              echo "::error::Tag v$TAG does not match manifest version $VERSION — bump extension/chrome-extension/package.json before tagging."
+              exit 1
+            fi
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check
+        run: pnpm type-check
+
+      - name: Build
+        run: pnpm build
+
+      - name: Package zip
+        run: |
+          cd dist
+          zip -qr "../koretex-${{ steps.version.outputs.version }}.zip" .
+
+      - name: Upload to Chrome Web Store
+        env:
+          EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+          CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+          TARGET: ${{ github.event_name == 'push' && 'default' || inputs.target }}
+        run: |
+          ARGS=(upload --source "koretex-${{ steps.version.outputs.version }}.zip")
+          if [[ "$PUBLISH" == "true" ]]; then
+            ARGS+=(--auto-publish)
+            [[ "$TARGET" == "trustedTesters" ]] && ARGS+=(--publish-target trustedTesters)
+          fi
+          pnpm dlx chrome-webstore-upload-cli@3 "${ARGS[@]}"
+
+      - name: Attach zip to GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: extension/koretex-${{ steps.version.outputs.version }}.zip
+          generate_release_notes: true

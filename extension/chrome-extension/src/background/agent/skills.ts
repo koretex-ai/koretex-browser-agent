@@ -79,14 +79,26 @@ export function allSkills(custom: CustomSkillRecord[]): Skill[] {
   return [...SKILLS.filter(skill => !overridden.has(skill.name)), ...compiled];
 }
 
+// Intent triggers match what the user ASKS, never the data they carry: an
+// email address or a pseudonym token inside the objective is payload, not
+// intent (live failure 2026-07-21: "chennyboy@gmail.com" in a form-filling
+// task matched the gmail playbook's /gmail/ trigger, which then steered
+// kickoff into inventing an email errand — ⟨email-1⟩ tokens match \bemail\b
+// the same way). Strip both before testing.
+const EMAIL_DATA_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+const PSEUDONYM_TOKEN_RE = /⟨[^⟩\n]{1,40}⟩/g;
+const intentText = (objective: string): string =>
+  objective.replace(EMAIL_DATA_RE, ' ').replace(PSEUDONYM_TOKEN_RE, ' ');
+
 /**
  * The playbooks applicable to this turn, matched against the live tab's
- * host+path and the objective text.
+ * host+path and the objective text (with data-like tokens stripped).
  */
 export function applicableSkills(objective: string, urlPath: string, skills: Skill[] = SKILLS): Skill[] {
+  const intentObjective = intentText(objective);
   return skills.filter(
     skill =>
-      skill.hosts.some(host => urlPath.includes(host)) || (skill.intent ? skill.intent.test(objective) : false),
+      skill.hosts.some(host => urlPath.includes(host)) || (skill.intent ? skill.intent.test(intentObjective) : false),
   );
 }
 

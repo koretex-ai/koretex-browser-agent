@@ -144,7 +144,14 @@ export function resolveTargetDetail(state: PerceptionSnapshot, target: string): 
   }
   if (bestScore < 0.45) return { index: null, ambiguous: false };
   // A strong second match within a hair of the best = indistinguishable by label
-  const ambiguous = bestScore >= 0.85 && secondScore >= bestScore - 0.08;
+  let ambiguous = bestScore >= 0.85 && secondScore >= bestScore - 0.08;
+  // A 1-2 character target is inherently under-specified — "K" exact-matches
+  // whichever letter-avatar the scan reaches first (live Discord failure
+  // 2026-07-25: three clicks aimed at the Koretex server icon landed on a
+  // different server's icon). Escalate-on-uncertainty: force the vision
+  // grounder, which sees the actual icons, instead of trusting a label match
+  // that cannot distinguish glyphs.
+  if (wanted.replace(/\s/g, '').length <= 2) ambiguous = true;
   return { index: bestIndex, ambiguous };
 }
 
@@ -167,6 +174,8 @@ export function describeStep(step: ProgramStep): string {
       return step.textFrom === 'collected'
         ? 'type the collected data into the focused editor'
         : `type ${String(step.text ?? '').split('\n').length} line(s) into the focused editor`;
+    case 'clear_focused':
+      return 'clear the focused field';
     case 'key':
       return `press ${step.combo}`;
     case 'scroll':
@@ -268,8 +277,15 @@ export function createStepRunner(
   // With `seen` (harvest mode) the HARNESS deduplicates: the local reader
   // re-reports items that stay in view across scrolls, so only never-seen
   // lines count toward the target — and only they reach the journal.
-  const runExtract = async (query: string, seen?: Set<string>): Promise<{ newItems: number; note: string }> => {
+  const runExtract = async (
+    query: string,
+    seen?: Set<string>,
+  ): Promise<{ newItems: number; note: string; truncated: boolean }> => {
     let pageText = await capturePageText(tab()).catch(() => lastState?.pageText ?? '');
+    // The page-text capture stamps a marker when the char budget cut the
+    // read short — surface that fact in every result so the judge grades
+    // "read part of the page" instead of mistaking partial for complete
+    const truncated = /\[PAGE TEXT TRUNCATED:/.test(pageText);
     const endpoint = ctx.readerEndpoint ?? LOCAL_ENDPOINT;
     // Cloud reading sends the FULL page text off-machine — pseudonymize
     // detectable identifiers first when the PII guard is on
@@ -286,10 +302,10 @@ export function createStepRunner(
       // an otherwise healthy run at this exact spot)
       const message = error instanceof Error ? error.message : String(error);
       logger.warning('reader call failed:', message);
-      return { newItems: 0, note: `READER ERROR: ${message.slice(0, 160)}` };
+      return { newItems: 0, note: `READER ERROR: ${message.slice(0, 160)}`, truncated };
     }
-    if (/^NOTHING NEW/i.test(answer)) return { newItems: 0, note: 'nothing new' };
-    if (answer.startsWith('NOT FOUND')) return { newItems: 0, note: answer.slice(0, 120) };
+    if (/^NOTHING NEW/i.test(answer)) return { newItems: 0, note: 'nothing new', truncated };
+    if (answer.startsWith('NOT FOUND')) return { newItems: 0, note: answer.slice(0, 120), truncated };
     let reported = answer;
     let newItems = countItems(answer);
     if (seen) {
@@ -301,13 +317,13 @@ export function createStepRunner(
           seen.add(key);
           return true;
         });
-        if (fresh.length === 0) return { newItems: 0, note: 'no new items (all already collected)' };
+        if (fresh.length === 0) return { newItems: 0, note: 'no new items (all already collected)', truncated };
         reported = fresh.join('\n');
         newItems = fresh.length;
       } else {
         // Prose answer: treat the whole thing as one item
         const key = itemKey(answer);
-        if (seen.has(key)) return { newItems: 0, note: 'no new items (same as before)' };
+        if (seen.has(key)) return { newItems: 0, note: 'no new items (same as before)', truncated };
         seen.add(key);
         newItems = 1;
       }
@@ -325,7 +341,7 @@ export function createStepRunner(
         })
         .catch(error => logger.warning('trajectory logging failed:', error));
     }
-    return { newItems, note: reported.slice(0, 160) };
+    return { newItems, note: reported.slice(0, 160), truncated };
   };
 
   // A step's text, with textFrom:"collected" expanded from the task's local
@@ -371,6 +387,20 @@ export function createStepRunner(
           };
         }
         return executeAction(tab(), taskId, { type: 'type_focused', text }, lastState, logContextFor(step));
+      }
+      case 'clear_focused': {
+        // Empty the focused editable (draft removal before a clean retype).
+        // Scoped to the focused element itself — a spreadsheet grid has no
+        // focused editable, so this can never hit the Sheets select-all trap;
+        // it just reports failure and the navigator uses grid semantics.
+        const result = await runInPage(tab(), clearFocusedEditable).catch(() => null);
+        if (!result?.cleared) {
+          return {
+            ok: false,
+            message: 'nothing focused that can be cleared — click the field/composer to focus it first',
+          };
+        }
+        return { ok: true, message: 'cleared the focused field' };
       }
       case 'wait':
         await sleep(Math.min(step.ms ?? 1000, 10000));
@@ -462,11 +492,26 @@ export function createStepRunner(
           );
           if (!focus.ok) return { ok: false, message: `could not focus "${step.target}": ${focus.message}` };
           await sleep(400);
-          // `type` promises REPLACE semantics, but type_focused is insert-only
-          // (the Sheets select-all trap). Clear the now-focused field first —
-          // scoped to the focused editable itself, so a grid can never be hit.
-          // Without this, a retry into a rich composer APPENDS (live WhatsApp
-          // failure 2026-07-18: "good morning" snowballed to 8 copies).
+          // Focused PLAIN form field: set the value directly (native replace
+          // semantics — and the only correct route for segmented native
+          // pickers: keystrokes into a time input land per-segment, live
+          // failure 2026-07-21 turned "20:00" into 02:00). A rejection with a
+          // format message (picky input) is a real, actionable step failure.
+          const direct = await executeAction(
+            tab(),
+            taskId,
+            { type: 'type', index: -1, text },
+            lastState,
+            logContextFor(step),
+          );
+          if (direct.ok) return direct;
+          if (!direct.message.startsWith('NOT_EDITABLE:')) return direct;
+          // Rich/canvas editor: trusted CDP keyboard input. `type` promises
+          // REPLACE semantics, but type_focused is insert-only (the Sheets
+          // select-all trap). Clear the now-focused field first — scoped to
+          // the focused editable itself, so a grid can never be hit. Without
+          // this, a retry into a rich composer APPENDS (live WhatsApp failure
+          // 2026-07-18: "good morning" snowballed to 8 copies).
           await runInPage(tab(), clearFocusedEditable).catch(() => {});
           return executeAction(tab(), taskId, { type: 'type_focused', text }, lastState, logContextFor(step));
         } catch (error) {
@@ -477,8 +522,15 @@ export function createStepRunner(
       }
       case 'extract': {
         if (!step.query) return { ok: false, message: 'extract step has no query' };
-        const { newItems, note } = await runExtract(step.query);
+        const { newItems, note, truncated } = await runExtract(step.query);
         if (note.startsWith('READER ERROR')) return { ok: false, message: note };
+        // The judge grades from measured facts, not the reader's prose: a
+        // hard item count plus an explicit partial-read warning (a truncated
+        // extract that "found something" is progress, never completion)
+        const truncationWarning = truncated
+          ? ' ⚠ PAGE ONLY PARTIALLY READ — the text was capped before the end of the page; more matching content may exist beyond the cap (scroll + re-extract, or use harvest)'
+          : '';
+        const totalCollected = (ctx.collectedItems?.() ?? []).length;
         // Zero-yield parity with harvest: a read that found NOTHING while the
         // task collection is still empty is a step failure the reflector must
         // see NOW — not a silent ✓ that surfaces as an empty deliverable ten
@@ -486,13 +538,16 @@ export function createStepRunner(
         // (the tail of a scroll+extract sequence legitimately runs dry), and a
         // prose answer (a fact, not list items) counts as content.
         const foundNothing = newItems === 0 && (/^(NOT FOUND|nothing new|no new items)/i.test(note) || !note.trim());
-        if (foundNothing && (ctx.collectedItems?.() ?? []).length === 0) {
+        if (foundNothing && totalCollected === 0) {
           return {
             ok: false,
-            message: `extract collected 0 items — the content may not have rendered yet or the query matched nothing on this page (reader said: ${note || 'empty answer'})`,
+            message: `extract collected 0 items — the content may not have rendered yet or the query matched nothing on this page (reader said: ${note || 'empty answer'})${truncationWarning}`,
           };
         }
-        return { ok: true, message: note };
+        return {
+          ok: true,
+          message: `added ${newItems} new item(s), collection now ${totalCollected} —${truncationWarning ? truncationWarning + ' —' : ''} ${note}`,
+        };
       }
       case 'verify_visual': {
         if (!step.question) return { ok: false, message: 'verify_visual step has no question' };

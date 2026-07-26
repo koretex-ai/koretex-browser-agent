@@ -25,10 +25,12 @@ export const ModelSettings = ({ isDarkMode = false, section }: ModelSettingsProp
   const [orchestratorApiKey, setOrchestratorApiKey] = useState(DEFAULT_CHAT_SETTINGS.orchestratorApiKey);
   const [orchestratorModel, setOrchestratorModel] = useState(DEFAULT_CHAT_SETTINGS.orchestratorModel);
   const [navigatorModel, setNavigatorModel] = useState(DEFAULT_CHAT_SETTINGS.navigatorModel);
+  const [strategistModel, setStrategistModel] = useState(DEFAULT_CHAT_SETTINGS.strategistModel);
   const [cloudOnly, setCloudOnly] = useState(DEFAULT_CHAT_SETTINGS.cloudOnly);
   const [cloudReaderModel, setCloudReaderModel] = useState(DEFAULT_CHAT_SETTINGS.cloudReaderModel);
   const [piiGuard, setPiiGuard] = useState(DEFAULT_CHAT_SETTINGS.piiGuard);
   const [sensitiveSites, setSensitiveSites] = useState(DEFAULT_CHAT_SETTINGS.sensitiveSites);
+  const [captchaBehavior, setCaptchaBehavior] = useState(DEFAULT_CHAT_SETTINGS.captchaBehavior);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [connection, setConnection] = useState<ConnectionStatus>({ state: 'idle' });
   const [saved, setSaved] = useState(false);
@@ -43,11 +45,13 @@ export const ModelSettings = ({ isDarkMode = false, section }: ModelSettingsProp
       setOrchestratorApiKey(settings.orchestratorApiKey);
       setOrchestratorModel(settings.orchestratorModel);
       setNavigatorModel(settings.navigatorModel);
+      setStrategistModel(settings.strategistModel ?? '');
       setCloudOnly(settings.cloudOnly);
       // Profiles saved before the default existed hold '' — show the default
       setCloudReaderModel(settings.cloudReaderModel || DEFAULT_CHAT_SETTINGS.cloudReaderModel);
       setPiiGuard(settings.piiGuard);
       setSensitiveSites(settings.sensitiveSites);
+      setCaptchaBehavior(settings.captchaBehavior ?? DEFAULT_CHAT_SETTINGS.captchaBehavior);
     });
   }, []);
 
@@ -81,10 +85,12 @@ export const ModelSettings = ({ isDarkMode = false, section }: ModelSettingsProp
       orchestratorApiKey: orchestratorApiKey.trim(),
       orchestratorModel: orchestratorModel.trim(),
       navigatorModel: navigatorModel.trim(),
+      strategistModel: strategistModel.trim(),
       cloudOnly,
       cloudReaderModel: cloudReaderModel.trim(),
       piiGuard,
       sensitiveSites: sensitiveSites.trim(),
+      captchaBehavior,
     });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -204,10 +210,9 @@ export const ModelSettings = ({ isDarkMode = false, section }: ModelSettingsProp
           />
           <div className="mt-2 flex flex-wrap gap-2">
             {[
-              { label: 'MiMo-V2.5 (recommended)', value: 'xiaomi/mimo-v2.5' },
-              { label: 'Qwen3.5-122B', value: 'qwen/qwen3.5-122b-a10b' },
+              { label: 'Qwen3.5-122B (recommended)', value: 'qwen/qwen3.5-122b-a10b' },
+              { label: 'MiMo-V2.5 (budget)', value: 'xiaomi/mimo-v2.5' },
               { label: 'GLM-4.6V', value: 'z-ai/glm-4.6v' },
-              { label: 'GPT-5.6 Luna (control)', value: 'openai/gpt-5.6-luna' },
             ].map(preset => (
               <button
                 key={preset.value}
@@ -227,6 +232,47 @@ export const ModelSettings = ({ isDarkMode = false, section }: ModelSettingsProp
           <p className={hintClass}>
             This is the model that sees screenshots. Leave empty to use the orchestrator model (it must then be
             multimodal).
+          </p>
+        </div>
+
+        <div>
+          <label htmlFor="strategist-model" className={labelClass}>
+            Strategist model (deep reasoning — task kickoff and strategic reviews)
+          </label>
+          <input
+            id="strategist-model"
+            type="text"
+            value={strategistModel}
+            onChange={e => setStrategistModel(e.target.value)}
+            placeholder={`empty = orchestrator model (${DEFAULT_CHAT_SETTINGS.orchestratorModel})`}
+            className={inputClass}
+          />
+          <div className="mt-2 flex flex-wrap gap-2">
+            {[
+              { label: 'Orchestrator model (default)', value: '' },
+              { label: 'GLM 5.2', value: 'z-ai/glm-5.2' },
+              { label: 'Kimi K3', value: 'moonshotai/kimi-k3' },
+              { label: 'Same as navigator', value: 'xiaomi/mimo-v2.5' },
+            ].map(preset => (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => setStrategistModel(preset.value)}
+                className={`rounded-md border px-2 py-1 text-xs transition-colors ${
+                  strategistModel === preset.value
+                    ? 'border-[#E8E8E8] text-[#E8E8E8]'
+                    : isDarkMode
+                      ? 'border-[#3D3D3D]/50 text-gray-400 hover:text-gray-200'
+                      : 'border-gray-300 text-gray-500 hover:text-gray-700'
+                }`}>
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <p className={hintClass}>
+            Used only for the handful of deep-thinking calls per task (interpreting the objective, getting unstuck) —
+            the navigator still does the step-by-step work. A stronger model here markedly improves planning at little
+            cost. Text-only models are fine: review screenshots are dropped automatically.
           </p>
         </div>
 
@@ -402,6 +448,25 @@ export const ModelSettings = ({ isDarkMode = false, section }: ModelSettingsProp
             In cloud-only mode: emails, phone numbers, card numbers and SSNs in outgoing text are replaced with tokens
             before leaving your machine; the real values are substituted back locally when the agent types them. Does
             not cover screenshots or names in ordinary page content.
+          </p>
+        </div>
+
+        <div>
+          <label htmlFor="captcha-behavior" className={labelClass}>
+            Human-verification challenges (CAPTCHA)
+          </label>
+          <select
+            id="captcha-behavior"
+            value={captchaBehavior}
+            onChange={e => setCaptchaBehavior(e.target.value as 'wait' | 'stop')}
+            className={inputClass}>
+            <option value="wait">Pause and wait for me to solve it, then continue (recommended)</option>
+            <option value="stop">Stop the task and report</option>
+          </select>
+          <p className={hintClass}>
+            The agent never solves verification challenges itself — that is enforced in code. This chooses what happens
+            when one appears: bring the agent window forward and auto-resume once you complete the check, or end the
+            run (you can still reply &quot;continue&quot; after clearing it manually).
           </p>
         </div>
 

@@ -90,6 +90,17 @@ export function extractInteractiveElements(showHighlights: boolean): ExtractedPa
   const getLabel = (el: HTMLElement): string => {
     const aria = el.getAttribute('aria-label');
     if (aria) return aria;
+    // Form controls: the associated <label> (wrapping or for=) IS the name a
+    // human would use. Plain <input>s have no innerText, so without this an
+    // ordinary label+input form digests as anonymous fields no target
+    // description can match (live failure 2026-07-21: every httpbin field
+    // unmatchable — typing fell back to raw keystrokes, which a segmented
+    // time input mangled).
+    const labels = (el as HTMLInputElement).labels;
+    if (labels?.length) {
+      const labelText = (labels[0].innerText || '').trim().replace(/\s+/g, ' ');
+      if (labelText) return labelText.slice(0, 120);
+    }
     const text = (el.innerText || '').trim().replace(/\s+/g, ' ');
     if (text) return text.slice(0, 120);
     return el.getAttribute('title') || el.getAttribute('alt') || '';
@@ -187,7 +198,12 @@ export function removeHighlights(): void {
 // char cap the planner reads what the screenshot shows. Interactive-element
 // labels alone miss most page content (prices, table cells, article text) —
 // this is the non-interactive complement to set-of-marks.
-export function extractPageText(maxChars: number): string {
+export function extractPageText(
+  maxChars: number,
+  includeLinks?: boolean,
+  reportTruncation?: boolean,
+  visibleOnly?: boolean,
+): string {
   const vh = window.innerHeight;
 
   // Preserve content-block boundaries as line breaks: posts/cards/rows are
@@ -261,18 +277,73 @@ export function extractPageText(maxChars: number): string {
   flush(inView);
   flush(offView);
 
+  // LINKS APPENDIX (extract/harvest reads only): a link renders as its label
+  // — the destination URL exists only in the href, invisible to text
+  // extraction. Objectives asking for URLs ("give me their websites") were
+  // unanswerable from page text alone (live failure 2026-07-21: five extract
+  // attempts, "URLs are not provided in the page text"). Maps visible link
+  // labels to absolute destinations; own budget, appended after the text.
+  const linksSection = (): string => {
+    if (!includeLinks) return '';
+    const seen = new Set<string>();
+    const lines: string[] = [];
+    for (const anchor of Array.from(document.querySelectorAll('a[href]'))) {
+      const el = anchor as HTMLAnchorElement;
+      const href = (el.href || '').replace(/#.*$/, '');
+      if (!/^https?:\/\//.test(href)) continue;
+      if (href === location.href.replace(/#.*$/, '')) continue;
+      const label = (el.innerText || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+      if (!label || label.length > 120) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) continue;
+      const key = `${label.toLowerCase()}|${href}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      lines.push(`${label} — ${href.slice(0, 200)}`);
+      if (lines.length >= 80) break;
+    }
+    return lines.length ? `\n\nLINKS ON PAGE (visible label — destination URL):\n${lines.join('\n')}` : '';
+  };
+
   const visible = inView.lines.join('\n');
-  if (visible.length >= maxChars) return visible.slice(0, maxChars) + '…';
+  // visibleOnly (sweep reads): ONLY what the current viewport shows — the
+  // per-screen read must match the screen, or scrolled-past content bleeds
+  // into every screenful and the sweep's per-screen accounting lies
+  if (visibleOnly) return visible.slice(0, maxChars);
   const rest = offView.lines.join('\n');
-  if (!rest) return visible;
+  // Truncation is a fact the harness must surface, not hide: a capped read on
+  // a big page silently looked complete and the judge graded partial data as
+  // done (live 2026-07-22: 4 of 150+ speakers extracted from a homepage).
+  // The marker rides inside the text so both the reader model and the
+  // harness (via a regex in runExtract) see the same ground truth.
+  const totalChars = visible.length + rest.length;
+  const truncationNote = (cut: boolean): string =>
+    reportTruncation && cut
+      ? `\n[PAGE TEXT TRUNCATED: read ${maxChars} of ~${totalChars} chars — content beyond this point was NOT read]`
+      : '';
+  if (visible.length >= maxChars) return visible.slice(0, maxChars) + '…' + linksSection() + truncationNote(true);
+  if (!rest) return visible + linksSection();
   const remaining = maxChars - visible.length;
-  return `${visible}\n[off-screen] ${rest.slice(0, remaining)}${rest.length > remaining ? '…' : ''}`;
+  const cut = rest.length > remaining;
+  return `${visible}\n[off-screen] ${rest.slice(0, remaining)}${cut ? '…' : ''}${linksSection()}${truncationNote(cut)}`;
 }
 
 // Click the element registered at the given index by the last extraction.
 // If the ref went stale (SPA re-rendered between perceive and act), recover
 // by hit-testing the element's remembered position.
-export function clickElementByIndex(index: number): { ok: boolean; error?: string; recovered?: boolean } {
+export function clickElementByIndex(index: number): {
+  ok: boolean;
+  error?: string;
+  recovered?: boolean;
+  /** Accessible name of the element actually clicked — the effector reports
+   * what it HIT, so a click that landed on the wrong target is visible in
+   * the exec note instead of masquerading as a page that "didn't react"
+   * (live Discord failure 2026-07-25: three clicks aimed at the Koretex
+   * server icon landed on a different server; the judge blamed the page and
+   * two strategic reviews prescribed strategy for a targeting defect). */
+  label?: string;
+  tag?: string;
+} {
   const win = window as any;
   let el: HTMLElement | undefined = win.__lbu?.elements?.[index];
   let recovered = false;
@@ -346,26 +417,89 @@ export function clickElementByIndex(index: number): { ok: boolean; error?: strin
   // the nearest activatable ancestor. Never ALSO call el.click() — a second
   // click event double-toggles checkboxes and menus.
   target.dispatchEvent(new MouseEvent('click', { ...base, button: 0, buttons: 0 }));
-  return { ok: true, recovered };
+  const rawLabel =
+    el.getAttribute('aria-label') ||
+    el.getAttribute('title') ||
+    el.innerText ||
+    (el as HTMLInputElement).value ||
+    el.getAttribute('placeholder') ||
+    '';
+  return {
+    ok: true,
+    recovered,
+    label: rawLabel.replace(/\s+/g, ' ').trim().slice(0, 60) || undefined,
+    tag: el.tagName.toLowerCase(),
+  };
 }
 
 // Type text into the element registered at the given index
-export async function typeIntoElement(index: number, text: string): Promise<{ ok: boolean; error?: string }> {
+/**
+ * Type into a registry element, or — index null — into whatever element
+ * currently has focus (the vision-fallback path: ground → click → type). The
+ * focused mode handles ONLY plain form fields and reports `notEditable` for
+ * everything else, so rich/canvas editors keep their trusted-CDP route.
+ */
+export async function typeIntoElement(
+  index: number | null,
+  text: string,
+): Promise<{ ok: boolean; error?: string; notEditable?: boolean }> {
   const win = window as any;
-  const el: HTMLElement | undefined = win.__lbu?.elements?.[index];
-  if (!el || !el.isConnected)
+  const el: HTMLElement | null | undefined =
+    index === null ? (document.activeElement as HTMLElement | null) : win.__lbu?.elements?.[index];
+  if (index !== null && (!el || !el.isConnected))
     return { ok: false, error: `No element at index ${index} — the page changed, using the new PAGE list` };
+  if (index === null && !(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement))
+    return { ok: false, notEditable: true, error: 'the focused element is not a plain form field' };
+  if (!el) return { ok: false, error: 'no element to type into' };
   el.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior });
   el.focus();
 
   if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    // Native picker inputs accept ONLY their machine format — anything else
+    // silently resets them to empty (and real keystrokes land per-segment:
+    // live failure 2026-07-21, "20:00" keyed into a time input became 02:00).
+    // Normalize what we can, and turn a silent rejection into an actionable
+    // format error instead of a false success.
+    const pickyFormats: Record<string, string> = {
+      time: 'HH:MM 24-hour time (e.g. 20:00)',
+      date: 'YYYY-MM-DD',
+      'datetime-local': 'YYYY-MM-DDTHH:MM',
+      month: 'YYYY-MM',
+      week: 'YYYY-W## (e.g. 2026-W29)',
+      number: 'a plain number',
+    };
+    const inputType = el instanceof HTMLInputElement ? el.type : '';
+    let value = text;
+    if (inputType === 'time') {
+      const m = text.match(/(\d{1,2})(?::(\d{2}))?(?::\d{2})?\s*(a\.?m\.?|p\.?m\.?)?/i);
+      if (m) {
+        let hours = parseInt(m[1], 10);
+        const minutes = m[2] ?? '00';
+        const meridiem = m[3]?.toLowerCase();
+        if (meridiem?.startsWith('p') && hours < 12) hours += 12;
+        if (meridiem?.startsWith('a') && hours === 12) hours = 0;
+        if (hours <= 23 && parseInt(minutes, 10) <= 59) value = `${String(hours).padStart(2, '0')}:${minutes}`;
+      }
+    } else if (inputType === 'date') {
+      value = text.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? text;
+    } else if (inputType === 'datetime-local') {
+      value = text.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/)?.[0] ?? text;
+    } else if (inputType === 'month') {
+      value = text.match(/\d{4}-\d{2}/)?.[0] ?? text;
+    }
     // Use the native setter so frameworks (React etc.) observe the change
     const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-    if (setter) setter.call(el, text);
-    else el.value = text;
+    if (setter) setter.call(el, value);
+    else el.value = value;
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
+    if (inputType in pickyFormats && el.value === '' && text.trim() !== '') {
+      return {
+        ok: false,
+        error: `the ${inputType} input rejected "${text}" — give the value as ${pickyFormats[inputType]}${inputType === 'time' ? '; a time input holds no date, so put any date in its own field' : ''}`,
+      };
+    }
     return { ok: true };
   }
 

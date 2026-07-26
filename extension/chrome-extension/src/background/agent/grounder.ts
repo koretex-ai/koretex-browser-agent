@@ -33,6 +33,48 @@ function parseXY(text: string): { x: number; y: number } | null {
   return null;
 }
 
+// Cloud grounding replies don't reliably use top-level {"x","y"} — GUI-agent
+// models answer in their training format: {"point_2d":[x,y]}, {"coordinate":
+// [x,y]}, a bbox whose center is the point, or nested objects (live Discord
+// run 2026-07-25: two grounding calls "returned no coordinates" and the click
+// steps died while the model had almost certainly answered). Coerce: exact
+// x/y first, then a 4-number array as a bbox center, then the first 2-number
+// array, then the first two finite numbers found in order.
+export function coerceXY(value: unknown): { x: number; y: number } | null {
+  if (value === null || typeof value !== 'object') return null;
+  const obj = value as Record<string, unknown>;
+  const x = Number(obj.x);
+  const y = Number(obj.y);
+  if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+  const nums: number[] = [];
+  const walk = (node: unknown): void => {
+    if (nums.length >= 4 || node === null) return;
+    if (typeof node === 'number' && Number.isFinite(node)) {
+      nums.push(node);
+      return;
+    }
+    if (typeof node === 'string' && Number.isFinite(Number(node)) && node.trim() !== '') {
+      nums.push(Number(node));
+      return;
+    }
+    if (Array.isArray(node)) {
+      if (node.length === 4 && node.every(n => Number.isFinite(Number(n)))) {
+        // A 4-number array is a bbox [x1,y1,x2,y2] — click its center
+        const [x1, y1, x2, y2] = node.map(Number);
+        nums.length = 0;
+        nums.push((x1 + x2) / 2, (y1 + y2) / 2);
+        return;
+      }
+      node.forEach(walk);
+      return;
+    }
+    if (typeof node === 'object') Object.values(node).forEach(walk);
+  };
+  walk(obj);
+  if (nums.length >= 2) return { x: nums[0], y: nums[1] };
+  return null;
+}
+
 export interface GroundedPoint {
   /** Viewport CSS coordinates, ready for click_at */
   x: number;
@@ -67,10 +109,11 @@ export async function groundTarget(tabId: number, instruction: string, signal: A
         undefined,
         { imageDataUrl: shot.dataUrl, modelOverride: navigatorModel || undefined, lowLatency: true },
       );
+      const coerced = coerceXY(value);
       logger.info(
-        `cloud grounding (${usage.model}, try ${attempt + 1}): x=${value.x} y=${value.y} $${usage.cost ?? '?'}`,
+        `cloud grounding (${usage.model}, try ${attempt + 1}): ${coerced ? `x=${coerced.x} y=${coerced.y}` : `unusable reply ${JSON.stringify(value).slice(0, 160)}`} $${usage.cost ?? '?'}`,
       );
-      point = { x: Number(value.x), y: Number(value.y) };
+      if (coerced) point = coerced;
     }
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y))
       throw new Error('Cloud grounder returned no coordinates');

@@ -3,6 +3,8 @@ import { useState } from 'react';
 import { withErrorBoundary, withSuspense } from '@extension/shared';
 import { ModelSettings } from './components/ModelSettings';
 import { SkillSettings } from './components/SkillSettings';
+import { MemorySettings } from './components/MemorySettings';
+import { AccountSettings } from './components/AccountSettings';
 import type { ModelSettingsSection } from './components/ModelSettings';
 
 const TABS = [
@@ -10,6 +12,8 @@ const TABS = [
   { id: 'local', label: 'Local models' },
   { id: 'privacy', label: 'Privacy' },
   { id: 'skills', label: 'Skills' },
+  { id: 'memory', label: 'Memory' },
+  { id: 'account', label: 'Account' },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -44,12 +48,23 @@ const Options = () => {
         </nav>
 
         {/* ModelSettings stays mounted across tab switches so unsaved edits
-            survive; only the Skills tab swaps the content out entirely. */}
-        <div className={tab === 'skills' ? 'hidden' : ''}>
-          <ModelSettings isDarkMode={isDarkMode} section={tab === 'skills' ? 'cloud' : (tab as ModelSettingsSection)} />
+            survive; only the Skills and Memory tabs swap the content out. */}
+        <div className={tab === 'skills' || tab === 'memory' || tab === 'account' ? 'hidden' : ''}>
+          <ModelSettings
+            isDarkMode={isDarkMode}
+            section={
+              tab === 'skills' || tab === 'memory' || tab === 'account' ? 'cloud' : (tab as ModelSettingsSection)
+            }
+          />
         </div>
         <div className={tab === 'skills' ? '' : 'hidden'}>
           <SkillSettings isDarkMode={isDarkMode} />
+        </div>
+        <div className={tab === 'memory' ? '' : 'hidden'}>
+          <MemorySettings isDarkMode={isDarkMode} />
+        </div>
+        <div className={tab === 'account' ? '' : 'hidden'}>
+          <AccountSettings isDarkMode={isDarkMode} />
         </div>
       </main>
     </div>

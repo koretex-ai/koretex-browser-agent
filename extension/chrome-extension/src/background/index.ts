@@ -5,7 +5,7 @@ import { runAgentTask } from './agent/loop';
 import { streamChatReply } from './agent/chat';
 import { handleTeachMessage } from './recorder/teach';
 import { initSchedules, setUserTaskProbe, cancelScheduledRun } from './schedules';
-import { acquireTaskTab } from './taskWindow';
+import { acquireTaskTab, hasSessionTab } from './taskWindow';
 import { postExecutionEvent } from './events';
 import { Actors, chatHistoryStore } from '@extension/storage';
 
@@ -77,9 +77,14 @@ chrome.runtime.onConnect.addListener(port => {
     chatHistoryStore
       .getSession(sessionId)
       .then(session => {
-        if (session?.messages?.length) {
-          port.postMessage({ type: 'session_backfill', messages: session.messages });
-        }
+        // taskRunning tells a mid-run panel (the trace viewer) to show the
+        // Stop button — cancel_task works from ANY port, the panel just never
+        // knew a task was live (live failure 2026-07-21: the agent window's
+        // panel had no way to stop the run). Sent even with an empty
+        // transcript so the button appears regardless.
+        // sessionId lets the panel bind to the watched session, so replies
+        // typed here (clarify answers) carry a valid taskId
+        port.postMessage({ type: 'session_backfill', messages: session?.messages ?? [], taskRunning: true, sessionId });
       })
       .catch(error => logger.warning('session backfill failed:', error));
   }
@@ -105,19 +110,32 @@ chrome.runtime.onConnect.addListener(port => {
           currentTaskSessionId = message.taskId;
           try {
             if (message.tabId) {
+              // Capture what the user was LOOKING AT before the run leaves
+              // their window — deictic objectives ("fill out this form") are
+              // unresolvable without it (live failure 2026-07-21: an agent-
+              // window run invented a Gmail errand because "this form" on the
+              // user's tab was invisible to every model).
+              const userTab = await chrome.tabs.get(message.tabId).catch(() => null);
+              const userPage =
+                userTab?.url && /^https?:/i.test(userTab.url) ? { url: userTab.url, title: userTab.title ?? '' } : null;
               // Agent mode runs in the DEDICATED agent window, never in the
               // tab the user is browsing (user decision 2026-07-20). Same
               // session reuses its tab so "continue" sees the stalled page.
               // Announce BEFORE opening and give the user a beat to read it
               // (feedback: the window popped before the message was legible).
-              postExecutionEvent(
-                port,
-                Actors.SYSTEM,
-                'step.ok',
-                message.taskId,
-                '🪟 This task runs in a separate agent window, opening in a moment — keep using your current window. A small trace window opens next to it so you can watch the steps live.',
-              );
-              await sleep(3000);
+              // Follow-ups that reuse the session's live tab announce nothing
+              // — no window opens, and the replayed notice + 3s pause read as
+              // a new window being spawned (user feedback 2026-07-21).
+              if (!(await hasSessionTab(message.taskId))) {
+                postExecutionEvent(
+                  port,
+                  Actors.SYSTEM,
+                  'step.ok',
+                  message.taskId,
+                  '🪟 This task runs in a separate agent window, opening in front so you can watch it work — switch back to your own window anytime, the agent keeps going. A small trace window opens next to it with the live steps.',
+                );
+                await sleep(3000);
+              }
               const acquired = await acquireTaskTab(message.taskId);
               // The loop decides whether the task needs the browser
               // (a 'respond' decision falls back to plain streaming chat)
@@ -127,6 +145,7 @@ chrome.runtime.onConnect.addListener(port => {
                 message.taskId,
                 message.task,
                 abort.signal,
+                userPage,
               );
             } else {
               await streamChatReply(port, message.taskId, message.task, abort.signal);

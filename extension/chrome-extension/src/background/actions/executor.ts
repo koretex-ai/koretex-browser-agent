@@ -34,9 +34,16 @@ async function performAction(tabId: number, action: Action): Promise<ActionResul
       if (!result?.ok) return { ok: false, message: result?.error ?? 'Click failed' };
       await sleep(POST_ACTION_DELAY_MS);
       await waitForTabLoad(tabId);
+      // Echo what was actually hit: the judge compares this against the
+      // intended target and catches a wrong-element click on the next turn
+      const hit = result.label
+        ? ` — hit "${result.label}"${result.tag ? ` (${result.tag})` : ''}`
+        : result.tag
+          ? ` — hit an unlabeled <${result.tag}>`
+          : '';
       return {
         ok: true,
-        message: `Clicked element [${action.index}]${result.recovered ? ' (page had re-rendered; clicked its last known position)' : ''}`,
+        message: `Clicked element [${action.index}]${hit}${result.recovered ? ' (page had re-rendered; clicked its last known position)' : ''}`,
       };
     }
     case 'click_at': {
@@ -50,9 +57,20 @@ async function performAction(tabId: number, action: Action): Promise<ActionResul
       };
     }
     case 'type': {
-      const result = await runInPage(tabId, typeIntoElement, action.index, action.text);
-      if (!result?.ok) return { ok: false, message: result?.error ?? 'Type failed' };
-      return { ok: true, message: `Typed "${action.text}" into element [${action.index}]` };
+      // index -1 = type into the currently FOCUSED plain form field (the
+      // vision-fallback path grounds + clicks first); pageScript reports
+      // notEditable for rich/canvas surfaces so the caller can escalate to
+      // trusted CDP input instead
+      const result = await runInPage(tabId, typeIntoElement, action.index >= 0 ? action.index : null, action.text);
+      if (!result?.ok)
+        return {
+          ok: false,
+          message: `${result?.notEditable ? 'NOT_EDITABLE: ' : ''}${result?.error ?? 'Type failed'}`,
+        };
+      return {
+        ok: true,
+        message: `Typed "${action.text}" into ${action.index >= 0 ? `element [${action.index}]` : 'the focused field'}`,
+      };
     }
     case 'scroll': {
       // undefined is not serializable as an executeScript arg — pass null

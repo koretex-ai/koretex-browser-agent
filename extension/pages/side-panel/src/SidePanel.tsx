@@ -48,6 +48,12 @@ const SidePanel = () => {
   // First-run tour: auto-opens once (onboardingStore flag), replayable via "?"
   const [showOnboarding, setShowOnboarding] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
+  // The session of the task this panel is WATCHING when it owns no session
+  // of its own (the trace viewer). Used ONLY as the taskId for messages the
+  // user types here (e.g. a clarify answer) — never for persistence, which
+  // stays with the originating panel (live failure 2026-07-21: a clarify
+  // answer typed into the viewer was rejected with "No task ID provided").
+  const watchedSessionRef = useRef<string | null>(null);
   const portRef = useRef<chrome.runtime.Port | null>(null);
   const heartbeatIntervalRef = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -108,11 +114,22 @@ const SidePanel = () => {
       const content = data?.details ?? '';
       const meta = data?.meta;
 
+      // A panel with no session of its own (the trace viewer) learns which
+      // session it is watching from the events themselves, so anything the
+      // user types here (a clarify answer, a follow-up) can carry the right
+      // taskId. Updated on every event: a new task in the same window
+      // rebinds the viewer to the new session.
+      if (!sessionIdRef.current && data?.taskId) watchedSessionRef.current = data.taskId;
+
       switch (state) {
         case ExecutionState.TASK_START:
           setIsHistoricalSession(false);
           setSkillOffer(false);
           setStreamingText('');
+          // Broadcast reaches every panel — a non-originating one (the trace
+          // viewer) must also offer Stop while the run is live
+          setShowStopButton(true);
+          setInputEnabled(false);
           break;
         case ExecutionState.STEP_OK:
           // Agent-loop progress: one live-updating line here; the full
@@ -211,6 +228,18 @@ const SidePanel = () => {
           // Session id stays null on purpose — the ORIGINATING panel owns
           // persistence; this panel only displays.
           setMessages(prev => (prev.length === 0 ? (message.messages ?? []) : prev));
+          // A task is in flight (the background only sends this mid-run):
+          // offer Stop here too — cancel_task works from any panel (live
+          // feedback 2026-07-21: the agent window's panel couldn't stop the
+          // run; the user had to hunt down the originating window).
+          if (message.taskRunning) {
+            setShowStopButton(true);
+            setInputEnabled(false);
+          }
+          // Bind to the in-flight session immediately (backup for the
+          // per-event binding above — covers a reply typed before any
+          // further event arrives)
+          if (!sessionIdRef.current && message.sessionId) watchedSessionRef.current = message.sessionId;
         } else if (message && message.type === 'heartbeat_ack') {
           console.log('Heartbeat acknowledged');
         } else if (message && message.type === 'skillify_offer') {
@@ -476,8 +505,13 @@ const SidePanel = () => {
       setInputEnabled(false);
       setShowStopButton(true);
 
+      // A panel with no session of its own that is watching one (the trace
+      // viewer) sends into the WATCHED session as a follow-up — this is how
+      // a clarify answer typed next to the agent window reaches the run
+      const watched = !sessionIdRef.current && watchedSessionRef.current ? watchedSessionRef.current : null;
+
       // Create a new chat session for this conversation if not in follow-up mode
-      if (!isFollowUpMode) {
+      if (!isFollowUpMode && !watched) {
         const titleText = displayText || text;
         const newSession = await chatHistoryStore.createSession(
           titleText.substring(0, 50) + (titleText.length > 50 ? '...' : ''),
@@ -494,8 +528,10 @@ const SidePanel = () => {
         timestamp: Date.now(),
       };
 
-      // Pass the sessionId directly to appendMessage
-      appendMessage(userMessage, sessionIdRef.current);
+      // Persist under the effective session: the user's message exists only
+      // in the panel it was typed into, so writing it from here cannot
+      // double-write (the originating panel persists only what IT shows)
+      appendMessage(userMessage, sessionIdRef.current ?? watched);
 
       // Setup connection if not exists
       if (!portRef.current) {
@@ -503,9 +539,9 @@ const SidePanel = () => {
       }
 
       await sendMessage({
-        type: isFollowUpMode ? 'follow_up_task' : 'new_task',
+        type: isFollowUpMode || watched ? 'follow_up_task' : 'new_task',
         task: text,
-        taskId: sessionIdRef.current,
+        taskId: sessionIdRef.current ?? watched,
         tabId,
       });
     } catch (err) {

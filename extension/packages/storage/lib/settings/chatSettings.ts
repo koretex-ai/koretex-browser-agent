@@ -34,6 +34,16 @@ export interface ChatSettingsConfig {
   /** Text model for cloud page reading; empty = orchestratorModel */
   cloudReaderModel: string;
   /**
+   * Model for the STRATEGIC tier — kickoff interpretation and strategic
+   * reviews, the calls where deep reasoning beats speed (live 2026-07-21:
+   * the cheap navigator stated the winning per-item plan and never executed
+   * it; reviews fixated on a single-source constraint the objective never
+   * had). Empty = orchestratorModel. The per-step navigator stays on
+   * navigatorModel. If this model is text-only, review screenshots are
+   * dropped automatically on retry.
+   */
+  strategistModel: string;
+  /**
    * PII guard (cloud-only mode): detectable identifiers (emails, phone
    * numbers, card numbers, SSNs) in outgoing TEXT are replaced with stable
    * tokens; the real values stay in a local vault and are substituted back
@@ -46,6 +56,14 @@ export interface ChatSettingsConfig {
    * go to the cloud model).
    */
   sensitiveSites: string;
+  /**
+   * What a run does when it hits a human-verification wall (CAPTCHA,
+   * Cloudflare challenge). The agent NEVER solves one itself — that is
+   * enforced in code, not by this setting. 'wait' (default): pause on the
+   * challenge page, surface the agent window, and auto-resume once the user
+   * clears it. 'stop': give up on that route immediately and report.
+   */
+  captchaBehavior: 'wait' | 'stop';
 }
 
 export type ChatSettingsStorage = BaseStorage<ChatSettingsConfig> & {
@@ -65,10 +83,13 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettingsConfig = {
   orchestratorBaseUrl: 'https://openrouter.ai/api/v1',
   orchestratorApiKey: '',
   orchestratorModel: 'z-ai/glm-5.2',
-  // Research verdict 2026-07-15: cheapest serious open-weights multimodal
-  // agent model on OpenRouter ($0.14/$0.28 per 1M, 310B-A15B omni MoE,
-  // GUI-agent-trained). Alternates: qwen/qwen3.5-122b-a10b, z-ai/glm-4.6v.
-  navigatorModel: 'xiaomi/mimo-v2.5',
+  // User decision 2026-07-22: strongest OPEN-WEIGHTS multimodal model as the
+  // per-step navigator — judgment quality saves steps and wall-clock, and
+  // cost is not the constraint (no OpenAI/Anthropic models by policy;
+  // GLM 5.2 is text-only so it cannot judge screenshots — its vision
+  // sibling is z-ai/glm-4.6v). Budget alternate: xiaomi/mimo-v2.5
+  // ($0.14/$0.28 per 1M, the 2026-07-15 pick, most-validated in the stack).
+  navigatorModel: 'qwen/qwen3.5-122b-a10b',
   // Cloud-only by default (user decision 2026-07-20): a fresh install works
   // with just an API key — no Ollama required. Local hybrid is opt-in.
   cloudOnly: true,
@@ -76,8 +97,14 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettingsConfig = {
   // page reading, and already the most-validated model in the stack
   cloudReaderModel: 'xiaomi/mimo-v2.5',
   piiGuard: true,
+  // Empty = orchestratorModel (GLM 5.2 by default): the strategic tier runs
+  // on the strongest configured reasoning model, per the user's standing
+  // decision (2026-07-21) to spend model quality generously where reasoning
+  // failed, while the cheap multimodal navigator keeps the per-step load
+  strategistModel: '',
   sensitiveSites:
     'bank, banking, paypal, venmo, wise.com, health, medical, clinic, insurance, medicare, centrelink, .gov, ato., irs.',
+  captchaBehavior: 'wait',
 };
 
 const storage = createStorage<ChatSettingsConfig>('chat-settings', DEFAULT_CHAT_SETTINGS, {

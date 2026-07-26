@@ -592,6 +592,10 @@ export async function runAgentTask(
   taskId: string,
   task: string,
   signal: AbortSignal,
+  // The page the user was viewing when they sent the task — the referent of
+  // "this page"/"this form" objectives, invisible to the agent window
+  // otherwise. Null for scheduled runs and non-http tabs.
+  userPage?: { url: string; title: string } | null,
 ): Promise<void> {
   postExecutionEvent(port, Actors.SYSTEM, 'task.start', taskId);
   const settings = await chatSettingsStore.getSettings();
@@ -613,7 +617,7 @@ export async function runAgentTask(
   try {
     if (await isOrchestratorConfigured()) {
       if (CLOUD_ENGINE === 'stepwise') {
-        await runStepwiseTask(port, tabId, taskId, task, record, signal);
+        await runStepwiseTask(port, tabId, taskId, task, record, signal, userPage ?? null);
       } else {
         await runPavTask(port, tabId, taskId, task, record, signal);
       }

@@ -6,6 +6,8 @@ export * from './recipes';
 export * from './skills';
 export * from './schedules';
 export * from './runstate';
+export * from './memory';
+export * from './account';
 export * from './prompt/favorites';
 
 // Re-export the favorites instance for direct use

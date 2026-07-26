@@ -21,8 +21,14 @@ export interface RunState {
   objective: string;
   /** Accumulated journal — the conductor's history, seeded on resume */
   journal: string[];
-  /** Deduplicated collected items, kept untruncated */
+  /** Deduplicated collected items, kept untruncated. In schema mode these
+   * are the rendered row lines ("name — column: value — …"), which the
+   * stepwise engine re-parses into rows on resume. */
   collection: string[];
+  /** Deliverable table schema (stepwise): set by kickoff when the objective's
+   * output is a set of items with fields; completeness is then computed in
+   * code. First column identifies the item. */
+  collectionSchema?: { columns: string[]; target?: number };
   status: RunStatus;
   /** Questions posted to the user; their next message answers these */
   pendingQuestions?: string[];

@@ -7,7 +7,12 @@ const logger = createLogger('taskWindow');
  * a task never borrows the tab the user is browsing — it runs in its own
  * window so the user keeps using theirs. Desktop-sized on purpose (the
  * vision grounder needs >=1280px screenshots and sites must render desktop
- * layouts) and opened UNFOCUSED so it lands behind the user's window.
+ * layouts). VISIBLE by design (user decision 2026-07-22): the window is
+ * brought to the FRONT at task start — created focused, and an existing
+ * agent window is re-focused when a new task lands in it — so the user can
+ * watch the agent work (previously it opened unfocused and sat hidden
+ * behind the user's window, which read as "no window opened"). The user can
+ * click back to their own window; CDP capture keeps working unfocused.
  * NEVER minimized — Chrome freezes the pages of minimized windows.
  *
  * Reuse policy:
@@ -78,13 +83,38 @@ async function ensureTraceViewer(agentWin: chrome.windows.Window): Promise<void>
 
 export type TaskTabAcquisition = { tabId: number; created: 'window' | 'tab' | 'reused' };
 
+/** Whether a follow-up on this session will reuse an existing live tab (no
+ * new window/tab announcement needed). */
+export async function hasSessionTab(sessionId: string): Promise<boolean> {
+  const prior = sessionTabs.get(sessionId);
+  if (!prior) return false;
+  return (await chrome.tabs.get(prior.tabId).catch(() => null)) !== null;
+}
+
+/**
+ * Keep the session→tab mapping pointing at the tab the run is ACTUALLY
+ * using. The stepwise engine opens each site in its own tab (tab-per-site),
+ * so the tab a run ends on is rarely the tab it was handed — without this,
+ * a follow-up "reused" the original ABOUT:BLANK starter tab and ran blind
+ * (live failure 2026-07-21: every turn "no screenshot available", scrolling
+ * a blank page).
+ */
+export function rebindSessionTab(sessionId: string, tabId: number): void {
+  const prior = sessionTabs.get(sessionId);
+  if (prior && prior.tabId !== tabId) sessionTabs.set(sessionId, { windowId: prior.windowId, tabId });
+}
+
 export async function acquireTaskTab(sessionId: string): Promise<TaskTabAcquisition | null> {
+  // Bring the agent window to the front so the user can watch the run
+  const surface = (windowId: number) => chrome.windows.update(windowId, { focused: true }).catch(() => {});
+
   // Same session -> same tab: its page state is the run's context
   const prior = sessionTabs.get(sessionId);
   if (prior) {
     const tab = await chrome.tabs.get(prior.tabId).catch(() => null);
     if (tab) {
       await chrome.tabs.update(prior.tabId, { active: true }).catch(() => {});
+      await surface(prior.windowId);
       return { tabId: prior.tabId, created: 'reused' };
     }
     sessionTabs.delete(sessionId);
@@ -99,6 +129,7 @@ export async function acquireTaskTab(sessionId: string): Promise<TaskTabAcquisit
         .catch(() => null);
       if (tab?.id !== undefined) {
         sessionTabs.set(sessionId, { windowId: agentWindowId, tabId: tab.id });
+        await surface(agentWindowId);
         await ensureTraceViewer(win);
         return { tabId: tab.id, created: 'tab' };
       }
@@ -106,9 +137,9 @@ export async function acquireTaskTab(sessionId: string): Promise<TaskTabAcquisit
     agentWindowId = null;
   }
 
-  // Fresh dedicated window
+  // Fresh dedicated window — created FOCUSED so it opens in front
   const win = await chrome.windows
-    .create({ url: 'about:blank', focused: false, width: 1290, height: 900 })
+    .create({ url: 'about:blank', focused: true, width: 1290, height: 900 })
     .catch(error => {
       logger.error('could not open the agent window', error);
       return null;
