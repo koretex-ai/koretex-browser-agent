@@ -45,6 +45,36 @@ Full "search leads + follow up" solution built on two repos:
 - [x] Dashboard: `/dashboard/runs` list + `/dashboard/runs/[id]` table (sort, CSV export, 4s polling while RUNNING, failed/stopped banners) — browser-verified 2026-07-26
 - [x] M5 download page: `ExtensionRelease` model + `npm run release:extension` (zips extension dist → Hetzner `extension-releases/`, keeps newest 3 zips, prunes older + stamps prunedAt) + public `/download` page (latest + previous versions + load-unpacked instructions) — v0.1.1 published & verified 2026-07-26
 
+## V1 — Mine my own LinkedIn network (current priority, set 2026-07-26)
+> The wedge: 5,000 first-degree connections behind the user's login that Apollo/Clay/Origami structurally cannot see. Goal: ranked top 100 with why-now + how-I-know-them.
+> Design: one agent, human-paced, resumable, no swarm. State = queue + done-set + table.
+
+### Pass 0 — seed (no browsing)
+- [ ] Ingest LinkedIn data export (`Connections.csv`: name, title, company, profile URL, connected-on)
+- [ ] NOTE: the archive also contains `messages.csv` (full DM history) — this may deliver Pass 3 "how you know them" for ALL contacts with zero browsing; check when the export lands
+
+### Pass 1 — classify (no browsing) — BUILT 2026-07-26
+- [x] Schema: `ContactImport` + `Contact` with 12 rich tags (archetype, seniority, functionalArea, companyType, companySize, industry, buyingPower, doesOutbound, icpFit 0-100, confidence, companyKnown, reason) + `tags` Json for future additions without migration
+- [x] `lib/linkedin-csv.ts`: RFC4180 parser that skips LinkedIn's pre-header notes lines; `companyKeyOf` normalizes "Google LLC" → google
+- [x] `lib/contact-classify.ts`: LLM-FIRST over UNIQUE title+company pairs (60/batch, 3 concurrent, OpenRouter structured outputs); blank rows tagged in code without a call; keyword rules are the FALLBACK when a batch fails. PRIVACY: only "position | company" is sent — never names. (Rules-first was tried and reverted 2026-07-26: it short-circuited the model on founders/recruiters — the highest-value rows — losing companyType/industry. Live proof: "Founder @ Cedar Recruitment Group" scored 80/unknown under rules-first vs 95/staffing_recruiting under LLM-first.)
+- [x] Credits: 5 coins/100 contacts, min 25, charged on completion only, admins free (`contactImportCost`)
+- [x] Master-DB feed: each distinct employer upserts a `Company` + `Observation`s (company_type, industry, size, known_connections). Company-level only — person data stays in the user's own rows
+- [x] Page `/dashboard/network` (nav tab "My Network"): upload, live progress, stat tiles, warm-accounts (companies where several connections cluster), filters, CSV export; `PATCH /api/contacts/[id]` for hand-corrections (editedByUser protects them from re-runs)
+- [x] Resilience: a dead batch never fails the whole import (rows stay unclassified); `POST /api/contacts/import/[id]/retry` re-runs only what is missing; `coinsCharged` guard prevents double-charging on retry
+- [ ] AWAITING: real Connections.csv to measure blank rate + unknown-company rate; user hand-labels 100 rows to validate
+- [ ] LATER: for contacts where `companyKnown` is false AND the title is promising, one cheap homepage fetch per COMPANY (not per person) to fill industry/size — first use of the server-side fetch tier
+
+### Pass 2 — continuous worker (the real build)
+- [ ] Agreed pacing: warmup 25/day → 50 → plateau 80/day, hard cap 100; sittings of 8-15 profiles then 15-45min breaks; 20-60s dwell per profile; randomize everything; active hours only
+- [ ] Kill-switches: any CAPTCHA/checkpoint/warning/logout → stop for the day; 2 anomalies in a week → halve the cap
+- [ ] Capture per profile: current role, company size, title still current, posts in last 30 days, engagement with user's content
+- [ ] Resumable + idempotent (queue/done-set persist; tab close = clean stop)
+- [ ] OPEN DECISION: visible vs private profile viewing (recommendation: stay visible — reciprocal views are a free warm touch)
+
+### Pass 3 — relationship archaeology (top 100)
+- [ ] Prior DM history + shared context → the "how you know them" line
+- [ ] Cap 20-25 threads/day. May be obsoleted by `messages.csv` from the export (see Pass 0)
+
 ## Phase 1 — Search MVP (vendor-free discovery)
 > Milestone: "Series A companies in Austin hiring SDRs" returns a real deduped table; repeat search answers instantly from DB.
 
