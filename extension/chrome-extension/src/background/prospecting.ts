@@ -48,6 +48,38 @@ const WALL_MARKERS = /(sign in to view|join linkedin to see|this profile is not 
 
 let abortRequested = false;
 
+/**
+ * Chrome kills an MV3 service worker it considers idle — and a long scoring
+ * wait can look idle, which killed a live sitting mid-run (2026-07-27: died
+ * silently after profile 11 of 25; no catch ever ran). A trivial extension
+ * API call every 20s resets Chrome's idle timer for the whole sitting.
+ */
+let keepaliveTimer: ReturnType<typeof setInterval> | undefined;
+function startKeepalive(): void {
+  stopKeepalive();
+  keepaliveTimer = setInterval(() => void chrome.runtime.getPlatformInfo().catch(() => {}), 20_000);
+}
+function stopKeepalive(): void {
+  if (keepaliveTimer !== undefined) clearInterval(keepaliveTimer);
+  keepaliveTimer = undefined;
+}
+
+/**
+ * Called once at service-worker start: a progress record still claiming
+ * "running" belongs to a PREVIOUS worker that Chrome terminated — this one
+ * just booted, so nothing is running. Settle it honestly, or the dashboard
+ * shows a phantom sitting forever and the autopilot waits behind it.
+ */
+export async function recoverOrphanedSitting(): Promise<void> {
+  const progress = await getProgress();
+  if (!progress.running) return;
+  await setProgress({
+    running: false,
+    message: 'Interrupted (the browser paused the extension) — unfinished profiles return to the queue on their own.',
+    finishedAt: Date.now(),
+  });
+}
+
 async function setProgress(patch: Partial<SittingProgress>): Promise<void> {
   const current = await getProgress();
   await chrome.storage.local.set({ [PROGRESS_KEY]: { ...current, ...patch } });
@@ -187,6 +219,7 @@ export async function runSitting(count: number): Promise<string> {
 
   let windowId: number | undefined;
   let tabId: number | undefined;
+  startKeepalive();
 
   try {
     const lease = (await api('/api/pass2/next', { count })) as unknown as {
@@ -330,6 +363,7 @@ export async function runSitting(count: number): Promise<string> {
     await setProgress({ running: false, message: `Stopped: ${message}` });
     return `Stopped: ${message}`;
   } finally {
+    stopKeepalive();
     // Close the working window; anything unvisited expires back to the queue.
     if (windowId !== undefined) await chrome.windows.remove(windowId).catch(() => {});
   }

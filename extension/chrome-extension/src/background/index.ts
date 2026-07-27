@@ -1,6 +1,6 @@
 import 'webextension-polyfill';
 import { createLogger } from './log';
-import { runSitting, getProgress, requestAbort } from './prospecting';
+import { runSitting, getProgress, requestAbort, recoverOrphanedSitting } from './prospecting';
 import { initAutopilot, enableAutopilot, disableAutopilot, getAutopilotState } from './autopilot';
 import { sendLinkedInMessage } from './outreach';
 import { handleCommand } from './commands';
@@ -136,6 +136,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 // Autopilot alarms fire sittings even while the dashboard is closed.
 initAutopilot();
+// A "running" sitting at boot belongs to a worker Chrome already killed.
+void recoverOrphanedSitting();
 
 // Setup connection listener for long-lived connections (e.g., side panel)
 chrome.runtime.onConnect.addListener(port => {
