@@ -28,9 +28,21 @@ export interface SittingProgress {
 
 const PROGRESS_KEY = 'pass2_progress';
 
-/** Pages that mean "stop", not "skip" — a challenge aimed at the account. */
-const CHECKPOINT_MARKERS =
-  /(security\s+verification|let'?s do a quick security check|unusual activity|verify\s+your\s+identity|captcha|challenge|are you a (human|robot))/i;
+/**
+ * A checkpoint is a challenge aimed at the ACCOUNT, and the only reliable
+ * signal is the URL LinkedIn sends you to. Text matching alone was a mistake:
+ * the word "challenge" appears in ordinary profile prose ("our biggest
+ * challenge was…") and halted a whole day on a perfectly normal profile.
+ */
+const CHECKPOINT_URLS = /linkedin\.com\/(checkpoint|authwall|uas\/(login|consumer-email-challenge))/i;
+
+/**
+ * Text phrases specific enough to be worth acting on — but only as a soft
+ * signal: one occurrence skips the profile, two in a row stop the day.
+ */
+const CHECKPOINT_TEXT =
+  /(let'?s do a quick security check|we'?ve restricted your account|verify your identity to continue|unusual activity (from|on) your account|confirm you'?re not a robot)/i;
+
 /** Pages that mean "this profile is unavailable" — skip it, keep going. */
 const WALL_MARKERS = /(sign in to view|join linkedin to see|this profile is not available|page not found)/i;
 
@@ -173,6 +185,7 @@ export async function runSitting(count: number): Promise<string> {
 
     let visited = 0;
     let failed = 0;
+    let consecutiveSuspicious = 0;
 
     for (const [i, contact] of lease.contacts.entries()) {
       if (abortRequested) {
@@ -189,17 +202,38 @@ export async function runSitting(count: number): Promise<string> {
       await wait(jitter(2500, 5000));
 
       let text = '';
+      let landedUrl = '';
       try {
+        landedUrl = (await chrome.tabs.get(tabId)).url ?? '';
         text = await capturePageText(tabId);
       } catch (error) {
         logger.warning('capture failed:', error);
       }
 
-      if (CHECKPOINT_MARKERS.test(text)) {
-        await api('/api/pass2/halt', { reason: 'LinkedIn showed a security check' });
-        await setProgress({ running: false, halted: true, message: 'Stopped — LinkedIn showed a security check.' });
-        return 'Stopped for today: LinkedIn showed a security check.';
+      // Redirected to a checkpoint: unambiguous, stop immediately.
+      if (CHECKPOINT_URLS.test(landedUrl)) {
+        const reason = `LinkedIn redirected to a security check (${landedUrl.slice(0, 120)})`;
+        await api('/api/pass2/halt', { reason }).catch(() => {});
+        await setProgress({ running: false, halted: true, message: `Stopped — ${reason}` });
+        return `Stopped for today: ${reason}`;
       }
+
+      // Text-only signal: skip this one, and only stop if it happens twice in
+      // a row — a single match can be a false positive on ordinary prose.
+      if (CHECKPOINT_TEXT.test(text)) {
+        consecutiveSuspicious++;
+        if (consecutiveSuspicious >= 2) {
+          const reason = 'two profiles in a row looked like a security check';
+          await api('/api/pass2/halt', { reason }).catch(() => {});
+          await setProgress({ running: false, halted: true, message: `Stopped — ${reason}` });
+          return `Stopped for today: ${reason}`;
+        }
+        failed++;
+        await setProgress({ failed, message: `${name}: page looked unusual — skipped.` });
+        if (i < lease.contacts.length - 1) await wait(jitter(8000, 20000));
+        continue;
+      }
+      consecutiveSuspicious = 0;
 
       if (!text || text.length < 200 || WALL_MARKERS.test(text)) {
         failed++;
