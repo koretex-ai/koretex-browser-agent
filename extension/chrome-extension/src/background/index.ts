@@ -2,6 +2,7 @@ import 'webextension-polyfill';
 import { createLogger } from './log';
 import { runSitting, getProgress, requestAbort } from './prospecting';
 import { initAutopilot, enableAutopilot, disableAutopilot, getAutopilotState } from './autopilot';
+import { sendLinkedInMessage } from './outreach';
 import { handleCommand } from './commands';
 import { runAgentTask } from './agent/loop';
 import { streamChatReply } from './agent/chat';
@@ -117,6 +118,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     getAutopilotState()
       .then(state => sendResponse(state))
       .catch(() => sendResponse(null));
+    return true;
+  }
+  if (message?.type === 'pass2_send_message') {
+    const payload = message.payload as { messageId?: string; profileUrl?: string; body?: string } | undefined;
+    sendLinkedInMessage({
+      messageId: String(payload?.messageId ?? ''),
+      profileUrl: String(payload?.profileUrl ?? ''),
+      body: String(payload?.body ?? ''),
+    })
+      .then(outcome => sendResponse(outcome))
+      .catch(error => sendResponse({ ok: false, reason: (error as Error).message }));
     return true;
   }
   return false;

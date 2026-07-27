@@ -30,7 +30,7 @@
     if (!ALLOWED.test(data.type)) return;
 
     try {
-      chrome.runtime.sendMessage({ type: data.type, count: data.count, enabled: data.enabled }, response => {
+      chrome.runtime.sendMessage({ type: data.type, count: data.count, enabled: data.enabled, payload: data.payload }, response => {
         // A sleeping service worker is normal, not an error worth surfacing.
         const error = chrome.runtime.lastError ? chrome.runtime.lastError.message : undefined;
         window.postMessage(
