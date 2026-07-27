@@ -164,11 +164,18 @@ export async function runSitting(count: number): Promise<string> {
       haltReason?: string;
       cap: number;
       remainingToday: number;
+      outOfCoins?: boolean;
+      coinBalance?: number;
     };
 
     if (lease.halted) {
       await setProgress({ running: false, halted: true, message: `Paused for today — ${lease.haltReason ?? 'unusual page seen'}` });
       return `Paused for today: ${lease.haltReason ?? 'unusual page seen'}`;
+    }
+    if (lease.outOfCoins) {
+      const message = 'Out of coins — top up to read more profiles.';
+      await setProgress({ running: false, message });
+      return message;
     }
     if (lease.contacts.length === 0) {
       await setProgress({ running: false, message: "Nothing left in the queue for today." });
