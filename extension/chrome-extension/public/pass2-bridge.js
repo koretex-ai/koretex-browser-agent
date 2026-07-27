@@ -9,6 +9,12 @@
  * and only when they originate from this page itself.
  */
 (() => {
+  // The manifest injects this at document_start; the background also injects it
+  // into tabs that were already open. Either path is enough, so the second one
+  // must not add a duplicate listener.
+  if (window.__koretexBridgeReady) return;
+  window.__koretexBridgeReady = true;
+
   const ALLOWED = new Set(['pass2_run_sitting', 'pass2_progress', 'pass2_stop']);
   const SOURCE_PAGE = 'koretex-page';
   const SOURCE_EXT = 'koretex-extension';

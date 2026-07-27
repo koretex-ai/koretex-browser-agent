@@ -56,7 +56,37 @@ logger.info('background loaded');
 setUserTaskProbe(() => currentAbort !== null);
 initSchedules();
 
-// Pass 2 prospecting worker — driven from the options page, independent of the
+// Manifest content scripts only reach pages loaded AFTER the extension starts,
+// so a dashboard tab that was already open would never gain the bridge (and
+// would wrongly report "extension not running"). Inject it into any open
+// Koretex tab at startup and after an update.
+const BRIDGE_MATCHES = [
+  'http://localhost:3000/*',
+  'http://127.0.0.1:3000/*',
+  'https://koretex.ai/*',
+  'https://*.koretex.ai/*',
+];
+
+async function injectBridgeIntoOpenTabs(): Promise<void> {
+  try {
+    const tabs = await chrome.tabs.query({ url: BRIDGE_MATCHES });
+    for (const tab of tabs) {
+      if (tab.id === undefined) continue;
+      await chrome.scripting
+        .executeScript({ target: { tabId: tab.id }, files: ['pass2-bridge.js'] })
+        .catch(() => {
+          /* tab closed or not scriptable — harmless */
+        });
+    }
+  } catch (error) {
+    logger.warning('bridge injection failed:', error);
+  }
+}
+
+void injectBridgeIntoOpenTabs();
+chrome.runtime.onInstalled.addListener(() => void injectBridgeIntoOpenTabs());
+
+// Pass 2 prospecting worker — driven from the dashboard, independent of the
 // agent loop. Hands only: it visits profiles and ships the text to the server.
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'pass2_run_sitting') {
