@@ -75,8 +75,8 @@ Full "search leads + follow up" solution built on two repos:
 Agreed with user: stay VISIBLE when viewing profiles; worker owns its OWN pinned LinkedIn tab (not the user's); "did they engage with MY content" deferred to Pass 3 / messages.csv.
 
 - [x] STEP 1 DONE (server side, 7f16bb5): Contact Pass-2 fields; ContactVisitStatus queue/done-set with expiring leases; VisitDay (durable daily cap + halt); buildQueue (ICP fit + recency, first 50 interleaved across archetypes, students/retirees/no-URL skipped); `POST/GET /api/pass2/next`, `POST /api/pass2/capture` (scores to timingScore/whyNow/bestHook), `POST /api/pass2/halt`. Short captures requeue rather than burn the contact. Verified end to end.
-- [ ] STEP 2: extension worker, MANUAL mode — "Run one sitting" button, ~10 profiles at human pace in a pinned tab, capture + submit. USER TEST GATE.
-- [ ] STEP 3: pacing engine — automatic sittings, jitter, active hours, warm-up ramp, kill-switches on checkpoint/CAPTCHA/logout
+- [x] STEP 2: extension worker, MANUAL mode — "Run one sitting" button, capture + submit. USER-VALIDATED 2026-07-27 (3 profiles read end-to-end: locations captured, scored, charged).
+- [x] STEP 3: pacing engine BUILT 2026-07-27 (v0.1.3, `background/autopilot.ts`): chrome.alarms-driven sittings of 8-15, 15-45 min jittered breaks, active hours 9:00-21:00 + up to 90 min start jitter, day-over on halt/empty queue/cap/no coins, self-disables on dead account link; dashboard toggle on Prospects page. Ramp raised same day: 50→100→150→200, hard cap 300 (env-tunable). USER TEST GATE: turn on autopilot, leave the browser open a day.
 - [ ] STEP 4: "Top 100" view on the site (ranked, why-now, hook) + progress card
 - [ ] Agreed pacing: warmup 25/day → 50 → plateau 80/day, hard cap 100; sittings of 8-15 profiles then 15-45min breaks; 20-60s dwell per profile; randomize everything; active hours only
 - [ ] Kill-switches: any CAPTCHA/checkpoint/warning/logout → stop for the day; 2 anomalies in a week → halve the cap
