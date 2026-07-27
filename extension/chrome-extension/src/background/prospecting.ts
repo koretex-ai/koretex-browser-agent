@@ -78,6 +78,9 @@ async function api(path: string, body?: unknown): Promise<Record<string, unknown
   if (!account.token) throw new Error('No account connected — connect one in Settings → Account.');
   const base = account.apiBase.replace(/\/+$/, '');
   const res = await fetch(`${base}${path}`, {
+    // Scoring a capture takes the server up to ~2 min; a hung call must fail
+    // rather than freeze the sitting forever.
+    signal: AbortSignal.timeout(180_000),
     method: body ? 'POST' : 'GET',
     headers: { Authorization: `Bearer ${account.token}`, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
@@ -241,6 +244,7 @@ export async function runSitting(count: number): Promise<string> {
       let landedUrl = '';
       try {
         landedUrl = (await chrome.tabs.get(tabId)).url ?? '';
+        await setProgress({ message: `Reading ${name}'s profile…` });
         ({ text, companyLinks } = await capturePage(tabId));
       } catch (error) {
         logger.warning('capture failed:', error);
@@ -276,6 +280,9 @@ export async function runSitting(count: number): Promise<string> {
         await setProgress({ failed, message: `${name}: profile could not be read — skipped.` });
       } else {
         try {
+          // Scoring runs server-side and takes 30-90s — say so, or a healthy
+          // sitting reads as stuck (live confusion 2026-07-27).
+          await setProgress({ message: `Scoring ${name} (takes a minute)…` });
           const captureRes = await api('/api/pass2/capture', {
             contactId: contact.id,
             text,
