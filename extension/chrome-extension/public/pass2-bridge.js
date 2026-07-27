@@ -15,13 +15,11 @@
   if (window.__koretexBridgeReady) return;
   window.__koretexBridgeReady = true;
 
-  const ALLOWED = new Set([
-    'pass2_run_sitting',
-    'pass2_progress',
-    'pass2_stop',
-    'pass2_autopilot_set',
-    'pass2_autopilot_status',
-  ]);
+  // Prefix match, not an allowlist: a fixed list went stale when the
+  // extension updated under an already-open dashboard tab (live failure
+  // 2026-07-27: autopilot messages silently dropped by the previous bridge).
+  // The background worker ignores unknown types, so the prefix is safe.
+  const ALLOWED = /^pass2_[a-z0-9_]+$/;
   const SOURCE_PAGE = 'koretex-page';
   const SOURCE_EXT = 'koretex-extension';
 
@@ -29,7 +27,7 @@
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.source !== SOURCE_PAGE || typeof data.type !== 'string') return;
-    if (!ALLOWED.has(data.type)) return;
+    if (!ALLOWED.test(data.type)) return;
 
     try {
       chrome.runtime.sendMessage({ type: data.type, count: data.count, enabled: data.enabled }, response => {
