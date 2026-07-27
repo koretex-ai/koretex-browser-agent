@@ -71,6 +71,13 @@ Full "search leads + follow up" solution built on two repos:
 - [ ] LATER: for contacts where `companyKnown` is false AND the title is promising, one cheap homepage fetch per COMPANY (not per person) to fill industry/size — first use of the server-side fetch tier
 
 ### Pass 2 — continuous worker (the real build)
+**Architecture decided 2026-07-27: extension = HANDS ONLY, brain on the server.** The worker captures profile page text and posts it to the site; the server runs the model call and stores results. Keeps the API key server-side, cost tracking in one place, and the extension dumb enough to be reliable. Same logic generalises: with a server brain + credits, users never need their own OpenRouter key.
+Agreed with user: stay VISIBLE when viewing profiles; worker owns its OWN pinned LinkedIn tab (not the user's); "did they engage with MY content" deferred to Pass 3 / messages.csv.
+
+- [x] STEP 1 DONE (server side, 7f16bb5): Contact Pass-2 fields; ContactVisitStatus queue/done-set with expiring leases; VisitDay (durable daily cap + halt); buildQueue (ICP fit + recency, first 50 interleaved across archetypes, students/retirees/no-URL skipped); `POST/GET /api/pass2/next`, `POST /api/pass2/capture` (scores to timingScore/whyNow/bestHook), `POST /api/pass2/halt`. Short captures requeue rather than burn the contact. Verified end to end.
+- [ ] STEP 2: extension worker, MANUAL mode — "Run one sitting" button, ~10 profiles at human pace in a pinned tab, capture + submit. USER TEST GATE.
+- [ ] STEP 3: pacing engine — automatic sittings, jitter, active hours, warm-up ramp, kill-switches on checkpoint/CAPTCHA/logout
+- [ ] STEP 4: "Top 100" view on the site (ranked, why-now, hook) + progress card
 - [ ] Agreed pacing: warmup 25/day → 50 → plateau 80/day, hard cap 100; sittings of 8-15 profiles then 15-45min breaks; 20-60s dwell per profile; randomize everything; active hours only
 - [ ] Kill-switches: any CAPTCHA/checkpoint/warning/logout → stop for the day; 2 anomalies in a week → halve the cap
 - [ ] Capture per profile: current role, company size, title still current, posts in last 30 days, engagement with user's content
