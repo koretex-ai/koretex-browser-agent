@@ -66,6 +66,15 @@ const manifest = withOperaSidebar(
     // (Google Docs/Sheets) ignore synthetic key events (Phase 6, DESIGN.md)
     // alarms: recurring user schedules fire agent runs from the service worker
     permissions: ['storage', 'tabs', 'activeTab', 'scripting', 'unlimitedStorage', 'debugger', 'alarms'],
+    // Content script on our own site only: relays the dashboard's prospecting
+    // controls to the background worker (see public/pass2-bridge.js).
+    content_scripts: [
+      {
+        matches: ['http://localhost:3000/*', 'http://127.0.0.1:3000/*', 'https://koretex.ai/*', 'https://*.koretex.ai/*'],
+        js: ['pass2-bridge.js'],
+        run_at: 'document_start',
+      },
+    ],
     options_page: 'options/index.html',
     background: {
       service_worker: 'background.iife.js',
