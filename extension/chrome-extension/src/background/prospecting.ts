@@ -128,6 +128,37 @@ const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 /** Human pacing: never the same gap twice. */
 const jitter = (lo: number, hi: number) => Math.round(lo + Math.random() * (hi - lo));
 
+/**
+ * A floating badge on the page being worked, so the worker window narrates
+ * itself — "what is it doing?" answerable by looking at it (user ask
+ * 2026-07-27). Injected fresh after each navigation; pointer-events none so
+ * it can never intercept a click.
+ */
+export async function showWorkerBadge(tabId: number, text: string): Promise<void> {
+  await chrome.scripting
+    .executeScript({
+      target: { tabId },
+      func: (label: string) => {
+        let el = document.getElementById('koretex-worker-badge');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'koretex-worker-badge';
+          el.style.cssText =
+            'position:fixed;top:12px;right:12px;z-index:2147483647;background:#111827;color:#fff;' +
+            'padding:8px 14px;border-radius:9999px;font:12px/1.4 -apple-system,BlinkMacSystemFont,sans-serif;' +
+            'box-shadow:0 2px 8px rgba(0,0,0,.35);pointer-events:none;opacity:.92;max-width:360px;' +
+            'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+          document.documentElement.appendChild(el);
+        }
+        el.textContent = label;
+      },
+      args: [text],
+    })
+    .catch(() => {
+      /* page not scriptable — the badge is narration, never load-bearing */
+    });
+}
+
 /** Waits for a tab to finish loading, or gives up. */
 function waitForLoad(tabId: number, timeoutMs = 30000): Promise<void> {
   return new Promise(resolve => {
@@ -188,6 +219,7 @@ async function capturePage(tabId: number): Promise<{ text: string; companyLinks:
 async function readCompanyPage(tabId: number, visit: { url: string; key: string }): Promise<'ok' | 'checkpoint'> {
   await chrome.tabs.update(tabId, { url: visit.url });
   await waitForLoad(tabId);
+  await showWorkerBadge(tabId, 'Koretex · Reading the company page for staff count');
   await wait(jitter(2500, 5000));
   const landedUrl = (await chrome.tabs.get(tabId)).url ?? '';
   if (CHECKPOINT_URLS.test(landedUrl)) return 'checkpoint';
@@ -278,6 +310,7 @@ export async function runSitting(count: number): Promise<string> {
       try {
         landedUrl = (await chrome.tabs.get(tabId)).url ?? '';
         await setProgress({ message: `Reading ${name}'s profile…` });
+        await showWorkerBadge(tabId, `Koretex · ${i + 1}/${lease.contacts.length} · Reading ${name}'s profile`);
         ({ text, companyLinks } = await capturePage(tabId));
       } catch (error) {
         logger.warning('capture failed:', error);
@@ -316,6 +349,7 @@ export async function runSitting(count: number): Promise<string> {
           // Scoring runs server-side and takes 30-90s — say so, or a healthy
           // sitting reads as stuck (live confusion 2026-07-27).
           await setProgress({ message: `Scoring ${name} (takes a minute)…` });
+          await showWorkerBadge(tabId, `Koretex · ${i + 1}/${lease.contacts.length} · Scoring ${name} (takes a minute)`);
           const captureRes = await api('/api/pass2/capture', {
             contactId: contact.id,
             text,
@@ -351,6 +385,7 @@ export async function runSitting(count: number): Promise<string> {
       if (i < lease.contacts.length - 1 && !abortRequested) {
         const gap = jitter(8000, 20000);
         await setProgress({ message: `Pausing ${Math.round(gap / 1000)}s…` });
+        await showWorkerBadge(tabId, `Koretex · Pausing ${Math.round(gap / 1000)}s like a person would`);
         await wait(gap);
       }
     }

@@ -1,5 +1,6 @@
 import { accountStore } from '@extension/storage';
 import { createLogger } from './log';
+import { showWorkerBadge } from './prospecting';
 
 const logger = createLogger('outreach');
 
@@ -66,6 +67,24 @@ async function driveCompose(tabId: number, text: string): Promise<SendOutcome> {
     func: async (message: string) => {
       const pause = (ms: number) => new Promise(r => setTimeout(r, ms));
 
+      // Premium/Sales Navigator upsell modals sit over the page and swallow
+      // clicks (live failure 2026-07-27: one killed a send). Their close
+      // buttons are artdeco-modal dismissals — the message compose overlay is
+      // NOT an artdeco modal, so this can never close our own compose.
+      const dismissUpsells = (): boolean => {
+        let hit = false;
+        for (const b of Array.from(
+          document.querySelectorAll<HTMLElement>(
+            '.artdeco-modal__dismiss, button[aria-label="Dismiss"], button[data-test-modal-close-btn]',
+          ),
+        )) {
+          b.click();
+          hit = true;
+        }
+        return hit;
+      };
+      if (dismissUpsells()) await pause(800);
+
       // 1. The Message button on the profile. aria-label is the stable handle
       // ("Message Jane Doe"); fall back to visible text.
       let btn: HTMLElement | null = document.querySelector<HTMLElement>(
@@ -80,11 +99,17 @@ async function driveCompose(tabId: number, text: string): Promise<SendOutcome> {
       if (!btn) return { ok: false, reason: 'No Message button — possibly not a 1st-degree connection.' };
       btn.click();
 
-      // 2. Wait for the compose box (messaging overlay renders lazily).
+      // 2. Wait for the compose box (messaging overlay renders lazily). An
+      // upsell modal can pop AFTER the Message click and block the overlay —
+      // halfway through the wait, clear modals and press Message once more.
       let box: HTMLElement | null = null;
       for (let i = 0; i < 24; i++) {
         box = document.querySelector<HTMLElement>('.msg-form__contenteditable[contenteditable="true"]');
         if (box) break;
+        if (i === 10 && dismissUpsells()) {
+          await pause(800);
+          btn.click();
+        }
         await pause(500);
       }
       if (!box) return { ok: false, reason: 'The message compose box did not open.' };
@@ -158,6 +183,7 @@ export async function sendLinkedInMessage(request: SendRequest): Promise<SendOut
 
     await chrome.tabs.update(tabId, { url: request.profileUrl });
     await waitForLoad(tabId);
+    await showWorkerBadge(tabId, 'Koretex · Opening the conversation to send your message');
     await wait(jitter(2500, 5000));
 
     const landedUrl = (await chrome.tabs.get(tabId)).url ?? '';
