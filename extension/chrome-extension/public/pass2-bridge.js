@@ -15,7 +15,13 @@
   if (window.__koretexBridgeReady) return;
   window.__koretexBridgeReady = true;
 
-  const ALLOWED = new Set(['pass2_run_sitting', 'pass2_progress', 'pass2_stop']);
+  const ALLOWED = new Set([
+    'pass2_run_sitting',
+    'pass2_progress',
+    'pass2_stop',
+    'pass2_autopilot_set',
+    'pass2_autopilot_status',
+  ]);
   const SOURCE_PAGE = 'koretex-page';
   const SOURCE_EXT = 'koretex-extension';
 
@@ -26,7 +32,7 @@
     if (!ALLOWED.has(data.type)) return;
 
     try {
-      chrome.runtime.sendMessage({ type: data.type, count: data.count }, response => {
+      chrome.runtime.sendMessage({ type: data.type, count: data.count, enabled: data.enabled }, response => {
         // A sleeping service worker is normal, not an error worth surfacing.
         const error = chrome.runtime.lastError ? chrome.runtime.lastError.message : undefined;
         window.postMessage(

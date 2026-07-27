@@ -1,6 +1,7 @@
 import 'webextension-polyfill';
 import { createLogger } from './log';
 import { runSitting, getProgress, requestAbort } from './prospecting';
+import { initAutopilot, enableAutopilot, disableAutopilot, getAutopilotState } from './autopilot';
 import { handleCommand } from './commands';
 import { runAgentTask } from './agent/loop';
 import { streamChatReply } from './agent/chat';
@@ -106,8 +107,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
+  if (message?.type === 'pass2_autopilot_set') {
+    (message.enabled ? enableAutopilot() : disableAutopilot())
+      .then(state => sendResponse(state))
+      .catch(() => sendResponse(null));
+    return true;
+  }
+  if (message?.type === 'pass2_autopilot_status') {
+    getAutopilotState()
+      .then(state => sendResponse(state))
+      .catch(() => sendResponse(null));
+    return true;
+  }
   return false;
 });
+
+// Autopilot alarms fire sittings even while the dashboard is closed.
+initAutopilot();
 
 // Setup connection listener for long-lived connections (e.g., side panel)
 chrome.runtime.onConnect.addListener(port => {
