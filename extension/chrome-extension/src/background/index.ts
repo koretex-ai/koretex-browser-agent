@@ -1,5 +1,6 @@
 import 'webextension-polyfill';
 import { createLogger } from './log';
+import { runSitting, getProgress, requestAbort } from './prospecting';
 import { handleCommand } from './commands';
 import { runAgentTask } from './agent/loop';
 import { streamChatReply } from './agent/chat';
@@ -54,6 +55,29 @@ logger.info('background loaded');
 // Recurring user schedules: alarms fire agent runs even with the panel closed
 setUserTaskProbe(() => currentAbort !== null);
 initSchedules();
+
+// Pass 2 prospecting worker — driven from the options page, independent of the
+// agent loop. Hands only: it visits profiles and ships the text to the server.
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === 'pass2_run_sitting') {
+    runSitting(Number(message.count) || 3)
+      .then(summary => sendResponse({ ok: true, summary }))
+      .catch(error => sendResponse({ ok: false, summary: (error as Error).message }));
+    return true; // async response
+  }
+  if (message?.type === 'pass2_progress') {
+    getProgress()
+      .then(progress => sendResponse(progress))
+      .catch(() => sendResponse(null));
+    return true;
+  }
+  if (message?.type === 'pass2_stop') {
+    requestAbort();
+    sendResponse({ ok: true });
+    return false;
+  }
+  return false;
+});
 
 // Setup connection listener for long-lived connections (e.g., side panel)
 chrome.runtime.onConnect.addListener(port => {

@@ -1,5 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { accountStore, DEFAULT_ACCOUNT } from '@extension/storage';
+
+interface SittingProgress {
+  running: boolean;
+  current: number;
+  total: number;
+  visited: number;
+  failed: number;
+  currentName: string;
+  message: string;
+  halted: boolean;
+}
 
 interface AccountSettingsProps {
   isDarkMode?: boolean;
@@ -17,6 +28,8 @@ export const AccountSettings = ({ isDarkMode = false }: AccountSettingsProps) =>
   const [codeInput, setCodeInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [sittingSize, setSittingSize] = useState(3);
+  const [progress, setProgress] = useState<SittingProgress | null>(null);
 
   useEffect(() => {
     accountStore.get().then(cfg => {
@@ -52,6 +65,32 @@ export const AccountSettings = ({ isDarkMode = false }: AccountSettingsProps) =>
     }
   };
 
+  const pollProgress = useCallback(() => {
+    chrome.runtime.sendMessage({ type: 'pass2_progress' }, (p?: SittingProgress) => {
+      if (chrome.runtime.lastError) return;
+      if (p) setProgress(p);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!connectedEmail) return;
+    pollProgress();
+    const t = setInterval(pollProgress, 1500);
+    return () => clearInterval(t);
+  }, [connectedEmail, pollProgress]);
+
+  const runSitting = () => {
+    chrome.runtime.sendMessage({ type: 'pass2_run_sitting', count: sittingSize }, () => {
+      if (chrome.runtime.lastError) return;
+      pollProgress();
+    });
+    setTimeout(pollProgress, 400);
+  };
+
+  const stopSitting = () => {
+    chrome.runtime.sendMessage({ type: 'pass2_stop' }, () => void chrome.runtime.lastError);
+  };
+
   const disconnect = async () => {
     await accountStore.disconnect();
     setConnectedEmail('');
@@ -78,6 +117,56 @@ export const AccountSettings = ({ isDarkMode = false }: AccountSettingsProps) =>
             className="mt-3 rounded-md border border-[#3D3D3D]/60 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-red-500/50">
             Disconnect
           </button>
+        </div>
+      ) : null}
+
+      {connectedEmail ? (
+        <div className="rounded-lg border border-[#3D3D3D]/60 p-4">
+          <p className="text-sm font-medium text-gray-200">Prospecting</p>
+          <p className="mt-1 text-xs text-gray-500">
+            Visits the next few people from your queue in this browser, reads their profile, and sends what it
+            finds to your account. Human paced — a few profiles takes a couple of minutes.
+          </p>
+
+          {progress?.running ? (
+            <div className="mt-3 rounded-md border border-blue-500/30 bg-blue-500/10 p-3">
+              <p className="text-xs text-blue-300">
+                {progress.total ? `${progress.current} of ${progress.total} · ` : ''}
+                {progress.message}
+              </p>
+              <button
+                type="button"
+                onClick={stopSitting}
+                className="mt-2 rounded-md border border-[#3D3D3D]/60 px-3 py-1 text-xs text-gray-300 transition-colors hover:border-red-500/50">
+                Stop
+              </button>
+            </div>
+          ) : (
+            <div className="mt-3 flex items-center gap-2">
+              <select
+                value={sittingSize}
+                onChange={e => setSittingSize(Number(e.target.value))}
+                className="rounded-md border border-[#3D3D3D]/60 bg-black px-2 py-1.5 text-sm text-gray-200 focus:border-gray-400 focus:outline-none">
+                {[3, 5, 10, 15, 25].map(n => (
+                  <option key={n} value={n}>
+                    {n} profiles
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={runSitting}
+                className="rounded-md bg-[#E8E8E8] px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-white">
+                Run one sitting
+              </button>
+            </div>
+          )}
+
+          {progress && !progress.running && progress.message ? (
+            <p className={`mt-2 text-xs ${progress.halted ? 'text-yellow-400' : 'text-gray-400'}`}>
+              {progress.message}
+            </p>
+          ) : null}
         </div>
       ) : (
         <div className="space-y-4">
