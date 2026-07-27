@@ -114,9 +114,11 @@ function waitForLoad(tabId: number, timeoutMs = 30000): Promise<void> {
 
 /**
  * Reads the profile the way a person would: let it settle, scroll far enough
- * for the activity section to render, then take the visible text.
+ * for the activity section to render, then take the visible text. Also grabs
+ * the /company/ links the page holds — the server uses them to find the
+ * employer's own page for the staff-count read.
  */
-async function capturePageText(tabId: number): Promise<string> {
+async function capturePage(tabId: number): Promise<{ text: string; companyLinks: string[] }> {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
     func: async () => {
@@ -128,10 +130,36 @@ async function capturePageText(tabId: number): Promise<string> {
       }
       window.scrollTo({ top: 0, behavior: 'auto' });
       await pause(300);
-      return document.body?.innerText ?? '';
+      // Document order matters: the experience section (current employer)
+      // renders before "similar pages", and the server trusts that ordering.
+      const companyLinks: string[] = [];
+      for (const a of Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href*="/company/"]'))) {
+        if (!companyLinks.includes(a.href)) companyLinks.push(a.href);
+        if (companyLinks.length >= 10) break;
+      }
+      return { text: document.body?.innerText ?? '', companyLinks };
     },
   });
-  return String(result?.result ?? '');
+  const value = result?.result as { text?: string; companyLinks?: string[] } | undefined;
+  return { text: String(value?.text ?? ''), companyLinks: value?.companyLinks ?? [] };
+}
+
+/**
+ * One company-page read: open the employer's About page, capture, submit.
+ * Deterministic on the server (no coins) but a page load here, so it gets the
+ * same human dwell as a profile. Failures are silently dropped — the company
+ * read is a bonus, never worth failing a sitting over.
+ */
+async function readCompanyPage(tabId: number, visit: { url: string; key: string }): Promise<'ok' | 'checkpoint'> {
+  await chrome.tabs.update(tabId, { url: visit.url });
+  await waitForLoad(tabId);
+  await wait(jitter(2500, 5000));
+  const landedUrl = (await chrome.tabs.get(tabId)).url ?? '';
+  if (CHECKPOINT_URLS.test(landedUrl)) return 'checkpoint';
+  const { text } = await capturePage(tabId);
+  if (!text || text.length < 100) return 'ok';
+  await api('/api/pass2/company-capture', { companyKey: visit.key, text });
+  return 'ok';
 }
 
 /**
@@ -209,10 +237,11 @@ export async function runSitting(count: number): Promise<string> {
       await wait(jitter(2500, 5000));
 
       let text = '';
+      let companyLinks: string[] = [];
       let landedUrl = '';
       try {
         landedUrl = (await chrome.tabs.get(tabId)).url ?? '';
-        text = await capturePageText(tabId);
+        ({ text, companyLinks } = await capturePage(tabId));
       } catch (error) {
         logger.warning('capture failed:', error);
       }
@@ -247,9 +276,32 @@ export async function runSitting(count: number): Promise<string> {
         await setProgress({ failed, message: `${name}: profile could not be read — skipped.` });
       } else {
         try {
-          await api('/api/pass2/capture', { contactId: contact.id, text, url: contact.profileUrl });
+          const captureRes = await api('/api/pass2/capture', {
+            contactId: contact.id,
+            text,
+            url: contact.profileUrl,
+            companyLinks,
+          });
           visited++;
           await setProgress({ visited, message: `${name}: captured.` });
+
+          // The server may want the employer's page read once — do it now,
+          // while we are naturally browsing, like a person clicking through.
+          const visitCompany = captureRes?.visitCompany as { url: string; key: string } | null | undefined;
+          if (visitCompany?.url && visitCompany.key && !abortRequested) {
+            await wait(jitter(4000, 9000));
+            await setProgress({ message: `Reading ${name}'s company page…` });
+            const outcome = await readCompanyPage(tabId, visitCompany).catch(error => {
+              logger.warning('company read failed:', error);
+              return 'ok' as const;
+            });
+            if (outcome === 'checkpoint') {
+              const reason = 'LinkedIn redirected to a security check on a company page';
+              await api('/api/pass2/halt', { reason }).catch(() => {});
+              await setProgress({ running: false, halted: true, message: `Stopped — ${reason}` });
+              return `Stopped for today: ${reason}`;
+            }
+          }
         } catch (error) {
           failed++;
           await setProgress({ failed, message: `${name}: ${(error as Error).message}` });
