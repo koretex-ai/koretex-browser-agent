@@ -13,10 +13,13 @@ export interface AccountConfig {
   apiBase: string;
 }
 
+// Default to production: downloaded builds go to real users, and a localhost
+// default reads as an error to them. Developers change the field to their dev
+// server when testing locally.
 export const DEFAULT_ACCOUNT: AccountConfig = {
   token: '',
   email: '',
-  apiBase: 'http://localhost:3000',
+  apiBase: 'https://koretex.ai',
 };
 
 export type AccountStorage = BaseStorage<AccountConfig> & {
