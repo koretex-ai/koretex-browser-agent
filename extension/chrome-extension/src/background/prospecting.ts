@@ -146,8 +146,7 @@ export async function showWorkerBadge(tabId: number, text: string): Promise<void
           el.style.cssText =
             'position:fixed;top:12px;right:12px;z-index:2147483647;background:#111827;color:#fff;' +
             'padding:8px 14px;border-radius:9999px;font:12px/1.4 -apple-system,BlinkMacSystemFont,sans-serif;' +
-            'box-shadow:0 2px 8px rgba(0,0,0,.35);pointer-events:none;opacity:.92;max-width:360px;' +
-            'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+            'box-shadow:0 2px 8px rgba(0,0,0,.35);pointer-events:none;opacity:.92;max-width:420px;';
           document.documentElement.appendChild(el);
         }
         el.textContent = label;
