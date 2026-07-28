@@ -1,6 +1,6 @@
 {
   "name": "local-browser-use-extension",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Vision-native local browser-use agent (Chrome side panel + Ollama)",
   "license": "Apache-2.0",
   "repository": {

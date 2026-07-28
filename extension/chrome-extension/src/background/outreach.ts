@@ -85,16 +85,6 @@ async function driveCompose(tabId: number, text: string): Promise<SendOutcome> {
       };
       if (dismissUpsells()) await pause(800);
 
-      // The Sales Navigator / InMail paywall is NOT a dismissable upsell: it
-      // appears in place of the compose when the person cannot be messaged on
-      // a free account (not a 1st-degree connection). Nothing to automate —
-      // fail with the real explanation (live evidence 2026-07-27: "Message in
-      // Sales Navigator / With Premium, you can message anyone").
-      const premiumWall = (): boolean => {
-        const d = document.querySelector<HTMLElement>('[role="dialog"], .artdeco-modal');
-        return /sales navigator|inmail|with premium,? you can message/i.test((d?.textContent ?? '').replace(/\s+/g, ' '));
-      };
-
       // What is actually on screen when something fails — the recorded reason
       // names the blocking dialog instead of guessing (debugging aid
       // 2026-07-27: a send died twice with no way to see which popup did it).
@@ -136,23 +126,24 @@ async function driveCompose(tabId: number, text: string): Promise<SendOutcome> {
       }
       btn.click();
 
-      // 2. Wait for the compose box (messaging overlay renders lazily). An
-      // upsell modal can pop AFTER the Message click and block the overlay —
-      // halfway through the wait, clear modals and press Message once more.
+      // 2. Wait for the compose box (messaging overlay renders lazily).
+      // A Sales Navigator upsell modal can intercept the Message click — even
+      // on a 1st-degree connection (live evidence 2026-07-27, "· 1st" profile).
+      // The previous fix dismissed it and immediately re-clicked Message,
+      // which just summoned the modal again. Correct order: dismiss, see if
+      // the compose is already there, and only re-click when it is not.
       let box: HTMLElement | null = null;
-      for (let i = 0; i < 24; i++) {
+      for (let i = 0; i < 30; i++) {
         box = document.querySelector<HTMLElement>('.msg-form__contenteditable[contenteditable="true"]');
         if (box) break;
-        if (premiumWall()) {
-          return {
-            ok: false,
-            reason:
-              'LinkedIn wants Sales Navigator/InMail to message this person, so they are probably not a 1st-degree connection. Connect with them first, then send.',
-          };
-        }
-        if (i === 10 && dismissUpsells()) {
-          await pause(800);
+        const modalUp = document.querySelector('[role="dialog"], .artdeco-modal');
+        if (modalUp && dismissUpsells()) {
+          await pause(900);
+          box = document.querySelector<HTMLElement>('.msg-form__contenteditable[contenteditable="true"]');
+          if (box) break;
           btn.click();
+          await pause(900);
+          continue;
         }
         await pause(500);
       }
