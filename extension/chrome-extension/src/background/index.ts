@@ -2,7 +2,7 @@ import 'webextension-polyfill';
 import { createLogger } from './log';
 import { runSitting, getProgress, requestAbort, recoverOrphanedSitting } from './prospecting';
 import { initAutopilot, enableAutopilot, disableAutopilot, getAutopilotState } from './autopilot';
-import { sendLinkedInMessage } from './outreach';
+import { sendLinkedInMessage, setOutreachHooks } from './outreach';
 import { handleCommand } from './commands';
 import { runAgentTask } from './agent/loop';
 import { streamChatReply } from './agent/chat';
@@ -121,11 +121,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message?.type === 'pass2_send_message') {
-    const payload = message.payload as { messageId?: string; profileUrl?: string; body?: string } | undefined;
+    const payload = message.payload as
+      | { messageId?: string; profileUrl?: string; body?: string; name?: string }
+      | undefined;
     sendLinkedInMessage({
       messageId: String(payload?.messageId ?? ''),
       profileUrl: String(payload?.profileUrl ?? ''),
       body: String(payload?.body ?? ''),
+      name: payload?.name ? String(payload.name) : undefined,
     })
       .then(outcome => sendResponse(outcome))
       .catch(error => sendResponse({ ok: false, reason: (error as Error).message }));
@@ -136,6 +139,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 // Autopilot alarms fire sittings even while the dashboard is closed.
 initAutopilot();
+// Outreach sends run through the full agent: give them the panel broadcast
+// (live trace in the viewer) and the user-task probe (never stack runs).
+setOutreachHooks({
+  broadcast: message => {
+    for (const port of connectedPorts) {
+      try {
+        port.postMessage(message);
+      } catch {
+        /* that panel is gone */
+      }
+    }
+  },
+  isBusy: () => currentAbort !== null,
+});
 // A "running" sitting at boot belongs to a worker Chrome already killed.
 void recoverOrphanedSitting();
 

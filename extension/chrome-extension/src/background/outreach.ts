@@ -1,24 +1,38 @@
-import { accountStore } from '@extension/storage';
+import { Actors, chatHistoryStore, accountStore } from '@extension/storage';
 import { createLogger } from './log';
-import { showWorkerBadge } from './prospecting';
+import { runAgentTask } from './agent/loop';
+import { acquireTaskTab } from './taskWindow';
 
 const logger = createLogger('outreach');
 
 /**
- * Sends ONE LinkedIn message through the user's own logged-in session.
+ * Sends ONE LinkedIn message through the user's own logged-in session — by
+ * running the full browser agent, not a script.
  *
- * Deliberately narrow: the user pressed Send on the dashboard for one specific
- * person and one specific piece of text — this module just performs that click
- * for them. Deterministic DOM automation, no model calls; anything ambiguous
- * (no Message button, compose did not open, send stayed disabled) fails
- * honestly rather than guessing. The server records the outcome so history is
- * only ever marked SENT when the compose box actually cleared.
+ * The first implementation drove the DOM with hardcoded selectors and died on
+ * the first surprise (live 2026-07-27: a dismissable Sales Navigator upsell
+ * intercepted the Message click three ways). The agent's act-observe loop
+ * plus the linkedin playbook handle surprises by design, the run shows live
+ * in the agent window + trace viewer, and every run is inspectable in
+ * History afterwards.
+ *
+ * Safety stays in code: the objective demands the EXACT text, forbids
+ * improvising routes, caps Send at one press, and requires an explicit
+ * MESSAGE_SENT / MESSAGE_NOT_SENT / MESSAGE_UNCERTAIN verdict — anything but
+ * a confirmed send is recorded as not sent, with the reason in the history.
  */
 
-const CHECKPOINT_URLS = /linkedin\.com\/(checkpoint|authwall|uas\/(login|consumer-email-challenge))/i;
+interface OutreachHooks {
+  /** Fan execution events out to every connected side panel (the trace viewer). */
+  broadcast: (message: unknown) => void;
+  /** A live user/scheduled agent task wins — never stack agent runs. */
+  isBusy: () => boolean;
+}
 
-const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-const jitter = (lo: number, hi: number) => Math.round(lo + Math.random() * (hi - lo));
+let hooks: OutreachHooks = { broadcast: () => {}, isBusy: () => false };
+export function setOutreachHooks(next: OutreachHooks): void {
+  hooks = next;
+}
 
 async function api(path: string, body: unknown): Promise<void> {
   const account = await accountStore.get();
@@ -31,28 +45,11 @@ async function api(path: string, body: unknown): Promise<void> {
   });
 }
 
-function waitForLoad(tabId: number, timeoutMs = 30000): Promise<void> {
-  return new Promise(resolve => {
-    const done = () => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      clearTimeout(timer);
-      resolve();
-    };
-    const listener = (id: number, info: chrome.tabs.TabChangeInfo) => {
-      if (id === tabId && info.status === 'complete') done();
-    };
-    const timer = setTimeout(done, timeoutMs);
-    chrome.tabs.onUpdated.addListener(listener);
-    chrome.tabs.get(tabId).then(tab => {
-      if (tab.status === 'complete') done();
-    });
-  });
-}
-
 interface SendRequest {
   messageId: string;
   profileUrl: string;
   body: string;
+  name?: string;
 }
 
 interface SendOutcome {
@@ -60,148 +57,54 @@ interface SendOutcome {
   reason?: string;
 }
 
-/** The in-page half: open the compose, insert the text, press Send, verify. */
-async function driveCompose(tabId: number, text: string): Promise<SendOutcome> {
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: async (message: string) => {
-      const pause = (ms: number) => new Promise(r => setTimeout(r, ms));
+function buildObjective(request: SendRequest): string {
+  const who = request.name?.trim() || 'this person';
+  return (
+    `Open ${request.profileUrl} and send ${who} this exact LinkedIn message:\n\n` +
+    `"${request.body}"\n\n` +
+    `Close any promotional or upsell dialog that gets in the way (Sales Navigator ads and the like), ` +
+    `open the message compose with the Message button, type the message EXACTLY as given — do not add, ` +
+    `remove or rephrase a single word — send it, and confirm it appears in the conversation thread.\n` +
+    `Hard rules: press Send at most ONCE in this entire run. If sending is impossible (no Message button, ` +
+    `LinkedIn demands payment or InMail, a security checkpoint appears), do not improvise another route — stop and explain.\n` +
+    `Your final answer MUST end with exactly one of these lines:\n` +
+    `MESSAGE_SENT — only if you can SEE the message in the thread.\n` +
+    `MESSAGE_UNCERTAIN — you pressed Send but could not confirm it landed.\n` +
+    `MESSAGE_NOT_SENT: <short reason> — you never pressed Send.`
+  );
+}
 
-      // Premium/Sales Navigator upsell modals sit over the page and swallow
-      // clicks (live failure 2026-07-27: one killed a send). Their close
-      // buttons are artdeco-modal dismissals — the message compose overlay is
-      // NOT an artdeco modal, so this can never close our own compose.
-      const dismissUpsells = (): boolean => {
-        let hit = false;
-        for (const b of Array.from(
-          document.querySelectorAll<HTMLElement>(
-            '.artdeco-modal__dismiss, button[aria-label="Dismiss"], button[data-test-modal-close-btn]',
-          ),
-        )) {
-          b.click();
-          hit = true;
-        }
-        return hit;
-      };
-      if (dismissUpsells()) await pause(800);
-
-      // What is actually on screen when something fails — the recorded reason
-      // names the blocking dialog instead of guessing (debugging aid
-      // 2026-07-27: a send died twice with no way to see which popup did it).
-      const dialogSummary = (): string => {
-        const texts = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"], .artdeco-modal'))
-          .map(d => (d.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 90))
-          .filter(Boolean)
-          .slice(0, 3);
-        return texts.length ? ` Visible dialogs: ${texts.join(' | ')}` : '';
-      };
-
-      // 1. The Message button on the profile. aria-label is the stable handle
-      // ("Message Jane Doe"); fall back to visible text, then to the More
-      // menu — some layouts tuck Message inside it.
-      let btn: HTMLElement | null = document.querySelector<HTMLElement>(
-        'main button[aria-label^="Message"], main a[aria-label^="Message"]',
-      );
-      if (!btn) {
-        btn =
-          Array.from(document.querySelectorAll<HTMLElement>('main button, main a')).find(
-            el => el.textContent?.trim() === 'Message',
-          ) ?? null;
-      }
-      if (!btn) {
-        const more = Array.from(document.querySelectorAll<HTMLElement>('main button')).find(b =>
-          /more actions|^more$/i.test((b.getAttribute('aria-label') ?? b.textContent ?? '').trim()),
-        );
-        if (more) {
-          more.click();
-          await pause(800);
-          btn =
-            Array.from(document.querySelectorAll<HTMLElement>('div[role="button"], button, a')).find(
-              el => el.textContent?.trim() === 'Message',
-            ) ?? null;
-        }
-      }
-      if (!btn) {
-        return { ok: false, reason: `No Message button — possibly not a 1st-degree connection.${dialogSummary()}` };
-      }
-      btn.click();
-
-      // 2. Wait for the compose box (messaging overlay renders lazily).
-      // A Sales Navigator upsell modal can intercept the Message click — even
-      // on a 1st-degree connection (live evidence 2026-07-27, "· 1st" profile).
-      // The previous fix dismissed it and immediately re-clicked Message,
-      // which just summoned the modal again. Correct order: dismiss, see if
-      // the compose is already there, and only re-click when it is not.
-      let box: HTMLElement | null = null;
-      for (let i = 0; i < 30; i++) {
-        box = document.querySelector<HTMLElement>('.msg-form__contenteditable[contenteditable="true"]');
-        if (box) break;
-        const modalUp = document.querySelector('[role="dialog"], .artdeco-modal');
-        if (modalUp && dismissUpsells()) {
-          await pause(900);
-          box = document.querySelector<HTMLElement>('.msg-form__contenteditable[contenteditable="true"]');
-          if (box) break;
-          btn.click();
-          await pause(900);
-          continue;
-        }
-        await pause(500);
-      }
-      if (!box) return { ok: false, reason: `The message compose box did not open.${dialogSummary()}` };
-
-      // 3. Type the text. execCommand fires the input events LinkedIn's
-      // editor listens for; direct innerText assignment does not.
-      box.focus();
-      await pause(300);
-      document.execCommand('insertText', false, message);
-      await pause(800);
-
-      const typed = (box.innerText ?? '').trim();
-      if (!typed.includes(message.trim().slice(0, 40))) {
-        return { ok: false, reason: 'The text did not register in the compose box.' };
-      }
-
-      // 4. Send — only via an enabled send button; never the Enter key.
-      let send: HTMLButtonElement | null = null;
-      for (let i = 0; i < 10; i++) {
-        send =
-          document.querySelector<HTMLButtonElement>('button.msg-form__send-button:not([disabled])') ??
-          Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(
-            b => b.textContent?.trim() === 'Send' && !b.disabled,
-          ) ??
-          null;
-        if (send) break;
-        await pause(400);
-      }
-      if (!send) return { ok: false, reason: `The Send button never became clickable.${dialogSummary()}` };
-      send.click();
-
-      // 5. Verify: a successful send clears the compose box.
-      for (let i = 0; i < 12; i++) {
-        await pause(500);
-        const after = document.querySelector<HTMLElement>('.msg-form__contenteditable[contenteditable="true"]');
-        if (!after || (after.innerText ?? '').trim().length === 0) return { ok: true };
-      }
-      return { ok: false, reason: 'Clicked Send but the compose box never cleared — the message may not have gone out.' };
-    },
-    args: [text],
-  });
-  return (result?.result as SendOutcome | undefined) ?? { ok: false, reason: 'Could not reach the page.' };
+function parseOutcome(finalState: string, answer: string): SendOutcome {
+  if (/\bMESSAGE_UNCERTAIN\b/.test(answer)) {
+    return {
+      ok: false,
+      reason: 'The agent pressed Send but could not confirm it landed — check the thread on LinkedIn before retrying.',
+    };
+  }
+  const notSent = answer.match(/MESSAGE_NOT_SENT:?\s*(.*)/);
+  if (notSent) {
+    return { ok: false, reason: (notSent[1] || 'the agent could not send it').trim().slice(0, 280) };
+  }
+  if (finalState === 'task.ok' && /\bMESSAGE_SENT\b/.test(answer)) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    reason: 'The run ended without a confirmed send — open the run in History for the full trace.',
+  };
 }
 
 let sending = false;
 
-/** One send, end to end: open the profile in a worker window, drive the
- *  compose, report the outcome to the server, clean up. */
 export async function sendLinkedInMessage(request: SendRequest): Promise<SendOutcome> {
   if (sending) return { ok: false, reason: 'Another message is being sent right now — try again in a moment.' };
+  if (hooks.isBusy()) {
+    return { ok: false, reason: 'The agent is busy with another task — try again when it finishes.' };
+  }
   if (!request.messageId || !request.profileUrl || !request.body.trim()) {
     return { ok: false, reason: 'Missing message details.' };
   }
   sending = true;
-  let windowId: number | undefined;
-  let tabIdForBadge: number | undefined;
-  let outcome: SendOutcome | undefined;
 
   const finish = async (outcome: SendOutcome): Promise<SendOutcome> => {
     await api('/api/pass2/outreach/result', {
@@ -213,43 +116,53 @@ export async function sendLinkedInMessage(request: SendRequest): Promise<SendOut
   };
 
   try {
-    const win = await chrome.windows.create({ url: 'about:blank', focused: false, width: 1200, height: 900 });
-    windowId = win?.id;
-    const tabId = win?.tabs?.[0]?.id;
-    tabIdForBadge = tabId;
-    if (!tabId) return await finish({ ok: false, reason: 'Could not open a working tab.' });
+    const objective = buildObjective(request);
+    const session = await chatHistoryStore.createSession(
+      `✉️ Message ${request.name?.trim() || 'a lead'}`.slice(0, 60),
+    );
+    await chatHistoryStore.addMessage(session.id, {
+      actor: Actors.USER,
+      content: objective,
+      timestamp: Date.now(),
+    });
 
-    await chrome.tabs.update(tabId, { url: request.profileUrl });
-    await waitForLoad(tabId);
-    await showWorkerBadge(tabId, 'Koretex · Opening the conversation to send your message');
-    await wait(jitter(2500, 5000));
-
-    const landedUrl = (await chrome.tabs.get(tabId)).url ?? '';
-    if (CHECKPOINT_URLS.test(landedUrl)) {
-      outcome = { ok: false, reason: 'LinkedIn redirected to a security check — not sending today.' };
-      return await finish(outcome);
+    // The agent window + docked trace viewer — the user watches the send live.
+    const acquisition = await acquireTaskTab(session.id);
+    if (!acquisition) {
+      return await finish({ ok: false, reason: 'Could not open the agent window.' });
     }
 
-    outcome = await driveCompose(tabId, request.body);
-    return await finish(outcome);
-  } catch (error) {
-    outcome = { ok: false, reason: (error as Error).message };
-    return await finish(outcome);
+    let finalState = 'task.fail';
+    let lastAnswer = '';
+    const port = {
+      postMessage: (message: { type?: string; state?: string; data?: { details?: string; meta?: string } }) => {
+        hooks.broadcast(message);
+        if (message?.type !== 'execution' || !message.state) return;
+        if (['task.ok', 'task.fail', 'task.cancel'].includes(message.state)) {
+          finalState = message.state;
+          if (message.state === 'task.ok') lastAnswer = message.data?.details ?? '';
+          chatHistoryStore
+            .addMessage(session.id, {
+              actor: message.state === 'task.ok' ? Actors.ASSISTANT : Actors.SYSTEM,
+              content: message.data?.details || (message.state === 'task.ok' ? 'Done.' : 'Failed.'),
+              timestamp: Date.now(),
+              meta: message.data?.meta,
+            })
+            .catch(err => logger.error('failed to persist outreach message', err));
+        }
+      },
+    } as unknown as chrome.runtime.Port;
+
+    const abort = new AbortController();
+    try {
+      await runAgentTask(port, acquisition.tabId, session.id, objective, abort.signal);
+    } catch (error) {
+      logger.error('outreach agent run crashed', error);
+      return await finish({ ok: false, reason: (error as Error).message.slice(0, 200) });
+    }
+
+    return await finish(parseOutcome(finalState, lastAnswer));
   } finally {
     sending = false;
-    if (windowId !== undefined) {
-      if (outcome?.ok) {
-        // A short beat so the send settles before the window vanishes.
-        await wait(1500);
-        await chrome.windows.remove(windowId).catch(() => {});
-      } else {
-        // Leave the evidence on screen: the user sees exactly which popup or
-        // page state blocked the send instead of a vanishing window.
-        if (tabIdForBadge !== undefined) {
-          await showWorkerBadge(tabIdForBadge, `Koretex · Could not send: ${outcome?.reason ?? 'unknown'}`);
-        }
-        await chrome.windows.update(windowId, { focused: true }).catch(() => {});
-      }
-    }
   }
 }
