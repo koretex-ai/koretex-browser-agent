@@ -32,6 +32,14 @@ const logger = createLogger('taskWindow');
 
 let agentWindowId: number | null = null;
 let viewerWindowId: number | null = null;
+
+/** Injected by index.ts: is any side panel already connected? If so, the
+ *  trace is already visible there and the popup viewer is redundant (live
+ *  complaint 2026-07-27: two identical trace panels side by side). */
+let panelProbe: () => boolean = () => false;
+export function setPanelProbe(probe: () => boolean): void {
+  panelProbe = probe;
+}
 const sessionTabs = new Map<string, { windowId: number; tabId: number }>();
 
 chrome.windows.onRemoved.addListener(windowId => {
@@ -59,6 +67,7 @@ chrome.windows.onRemoved.addListener(windowId => {
  * there to show them next to the tabs being driven.
  */
 async function ensureTraceViewer(agentWin: chrome.windows.Window): Promise<void> {
+  if (panelProbe()) return;
   if (viewerWindowId !== null) {
     const alive = await chrome.windows.get(viewerWindowId).catch(() => null);
     if (alive) return;

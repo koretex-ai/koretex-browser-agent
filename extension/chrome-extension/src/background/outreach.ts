@@ -93,7 +93,9 @@ function parseOutcome(finalState: string, answer: string): SendOutcome {
   if (notSent) {
     return { ok: false, reason: (notSent[1] || 'the agent could not send it').trim().slice(0, 280) };
   }
-  if (finalState === 'task.ok' && /\bMESSAGE_SENT\b/.test(answer)) {
+  // The verdict line is the contract — trust it however the run ended. The
+  // agent only writes MESSAGE_SENT after SEEING the message in the thread.
+  if (/\bMESSAGE_SENT\b/.test(answer)) {
     return { ok: true };
   }
   return {
@@ -148,7 +150,11 @@ export async function sendLinkedInMessage(request: SendRequest): Promise<SendOut
         if (message?.type !== 'execution' || !message.state) return;
         if (['task.ok', 'task.fail', 'task.cancel'].includes(message.state)) {
           finalState = message.state;
-          if (message.state === 'task.ok') lastAnswer = message.data?.details ?? '';
+          // A stalled run still writes an honest report (live 2026-07-27: the
+          // send succeeded, the report said MESSAGE_SENT, but the run ended
+          // through the stall path and the verdict was dropped) — capture the
+          // final text from every terminal state.
+          if (message.data?.details) lastAnswer = message.data.details;
           chatHistoryStore
             .addMessage(session.id, {
               actor: message.state === 'task.ok' ? Actors.ASSISTANT : Actors.SYSTEM,

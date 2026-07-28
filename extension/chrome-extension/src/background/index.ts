@@ -8,7 +8,7 @@ import { runAgentTask } from './agent/loop';
 import { streamChatReply } from './agent/chat';
 import { handleTeachMessage } from './recorder/teach';
 import { initSchedules, setUserTaskProbe, cancelScheduledRun } from './schedules';
-import { acquireTaskTab, hasSessionTab } from './taskWindow';
+import { acquireTaskTab, hasSessionTab, setPanelProbe } from './taskWindow';
 import { postExecutionEvent } from './events';
 import { Actors, chatHistoryStore } from '@extension/storage';
 
@@ -59,6 +59,8 @@ logger.info('background loaded');
 
 // Recurring user schedules: alarms fire agent runs even with the panel closed
 setUserTaskProbe(() => currentAbort !== null);
+// The popup trace viewer is only for runs nobody is already watching.
+setPanelProbe(() => connectedPorts.size > 0);
 initSchedules();
 
 // Manifest content scripts only reach pages loaded AFTER the extension starts,
