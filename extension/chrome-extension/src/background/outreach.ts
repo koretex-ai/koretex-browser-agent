@@ -27,9 +27,17 @@ interface OutreachHooks {
   broadcast: (message: unknown) => void;
   /** A live user/scheduled agent task wins — never stack agent runs. */
   isBusy: () => boolean;
+  /** Lets index.ts show the Stop button and route cancel_task to this run. */
+  onRunStart: (sessionId: string, abort: AbortController) => void;
+  onRunEnd: () => void;
 }
 
-let hooks: OutreachHooks = { broadcast: () => {}, isBusy: () => false };
+let hooks: OutreachHooks = {
+  broadcast: () => {},
+  isBusy: () => false,
+  onRunStart: () => {},
+  onRunEnd: () => {},
+};
 export function setOutreachHooks(next: OutreachHooks): void {
   hooks = next;
 }
@@ -154,11 +162,17 @@ export async function sendLinkedInMessage(request: SendRequest): Promise<SendOut
     } as unknown as chrome.runtime.Port;
 
     const abort = new AbortController();
+    hooks.onRunStart(session.id, abort);
     try {
       await runAgentTask(port, acquisition.tabId, session.id, objective, abort.signal);
     } catch (error) {
       logger.error('outreach agent run crashed', error);
       return await finish({ ok: false, reason: (error as Error).message.slice(0, 200) });
+    } finally {
+      hooks.onRunEnd();
+    }
+    if (abort.signal.aborted) {
+      return await finish({ ok: false, reason: 'Stopped by the user before the send completed.' });
     }
 
     return await finish(parseOutcome(finalState, lastAnswer));

@@ -22,6 +22,9 @@ let teachAbort: AbortController | null = null;
 // Session of the task in flight — lets a panel that connects MID-RUN (the
 // trace viewer) backfill the transcript so far from chat history
 let currentTaskSessionId: string | null = null;
+// An outreach send running through the agent — cancellable like a user task.
+let outreachAbort: AbortController | null = null;
+let outreachSessionId: string | null = null;
 
 // Every connected side panel — the agent window's own panel included. Agent
 // task events BROADCAST to all of them so the trace is watchable next to the
@@ -152,6 +155,23 @@ setOutreachHooks({
     }
   },
   isBusy: () => currentAbort !== null,
+  onRunStart: (sessionId, abort) => {
+    outreachAbort = abort;
+    outreachSessionId = sessionId;
+    // Panels already open (the trace viewer) learn a task is live so the
+    // Stop button appears — same contract as user tasks.
+    for (const port of connectedPorts) {
+      try {
+        port.postMessage({ type: 'session_backfill', messages: [], taskRunning: true, sessionId });
+      } catch {
+        /* gone */
+      }
+    }
+  },
+  onRunEnd: () => {
+    outreachAbort = null;
+    outreachSessionId = null;
+  },
 });
 // A "running" sitting at boot belongs to a worker Chrome already killed.
 void recoverOrphanedSitting();
@@ -170,6 +190,11 @@ chrome.runtime.onConnect.addListener(port => {
 
   currentPort = port;
   connectedPorts.add(port);
+
+  // An outreach send is running: the fresh panel needs the Stop button too.
+  if (outreachAbort && outreachSessionId) {
+    port.postMessage({ type: 'session_backfill', messages: [], taskRunning: true, sessionId: outreachSessionId });
+  }
 
   // A task is already running: seed this panel with the transcript so far
   // (the originating panel persists every message as it happens)
@@ -275,8 +300,9 @@ chrome.runtime.onConnect.addListener(port => {
         }
 
         case 'cancel_task': {
-          if (!currentAbort) return port.postMessage({ type: 'error', error: 'No running task' });
-          currentAbort.abort();
+          if (!currentAbort && !outreachAbort) return port.postMessage({ type: 'error', error: 'No running task' });
+          currentAbort?.abort();
+          outreachAbort?.abort();
           break;
         }
 
