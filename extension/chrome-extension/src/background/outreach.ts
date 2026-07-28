@@ -85,8 +85,20 @@ async function driveCompose(tabId: number, text: string): Promise<SendOutcome> {
       };
       if (dismissUpsells()) await pause(800);
 
+      // What is actually on screen when something fails — the recorded reason
+      // names the blocking dialog instead of guessing (debugging aid
+      // 2026-07-27: a send died twice with no way to see which popup did it).
+      const dialogSummary = (): string => {
+        const texts = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"], .artdeco-modal'))
+          .map(d => (d.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 90))
+          .filter(Boolean)
+          .slice(0, 3);
+        return texts.length ? ` Visible dialogs: ${texts.join(' | ')}` : '';
+      };
+
       // 1. The Message button on the profile. aria-label is the stable handle
-      // ("Message Jane Doe"); fall back to visible text.
+      // ("Message Jane Doe"); fall back to visible text, then to the More
+      // menu — some layouts tuck Message inside it.
       let btn: HTMLElement | null = document.querySelector<HTMLElement>(
         'main button[aria-label^="Message"], main a[aria-label^="Message"]',
       );
@@ -96,7 +108,22 @@ async function driveCompose(tabId: number, text: string): Promise<SendOutcome> {
             el => el.textContent?.trim() === 'Message',
           ) ?? null;
       }
-      if (!btn) return { ok: false, reason: 'No Message button — possibly not a 1st-degree connection.' };
+      if (!btn) {
+        const more = Array.from(document.querySelectorAll<HTMLElement>('main button')).find(b =>
+          /more actions|^more$/i.test((b.getAttribute('aria-label') ?? b.textContent ?? '').trim()),
+        );
+        if (more) {
+          more.click();
+          await pause(800);
+          btn =
+            Array.from(document.querySelectorAll<HTMLElement>('div[role="button"], button, a')).find(
+              el => el.textContent?.trim() === 'Message',
+            ) ?? null;
+        }
+      }
+      if (!btn) {
+        return { ok: false, reason: `No Message button — possibly not a 1st-degree connection.${dialogSummary()}` };
+      }
       btn.click();
 
       // 2. Wait for the compose box (messaging overlay renders lazily). An
@@ -112,7 +139,7 @@ async function driveCompose(tabId: number, text: string): Promise<SendOutcome> {
         }
         await pause(500);
       }
-      if (!box) return { ok: false, reason: 'The message compose box did not open.' };
+      if (!box) return { ok: false, reason: `The message compose box did not open.${dialogSummary()}` };
 
       // 3. Type the text. execCommand fires the input events LinkedIn's
       // editor listens for; direct innerText assignment does not.
@@ -138,7 +165,7 @@ async function driveCompose(tabId: number, text: string): Promise<SendOutcome> {
         if (send) break;
         await pause(400);
       }
-      if (!send) return { ok: false, reason: 'The Send button never became clickable.' };
+      if (!send) return { ok: false, reason: `The Send button never became clickable.${dialogSummary()}` };
       send.click();
 
       // 5. Verify: a successful send clears the compose box.
@@ -165,6 +192,8 @@ export async function sendLinkedInMessage(request: SendRequest): Promise<SendOut
   }
   sending = true;
   let windowId: number | undefined;
+  let tabIdForBadge: number | undefined;
+  let outcome: SendOutcome | undefined;
 
   const finish = async (outcome: SendOutcome): Promise<SendOutcome> => {
     await api('/api/pass2/outreach/result', {
@@ -179,6 +208,7 @@ export async function sendLinkedInMessage(request: SendRequest): Promise<SendOut
     const win = await chrome.windows.create({ url: 'about:blank', focused: false, width: 1200, height: 900 });
     windowId = win?.id;
     const tabId = win?.tabs?.[0]?.id;
+    tabIdForBadge = tabId;
     if (!tabId) return await finish({ ok: false, reason: 'Could not open a working tab.' });
 
     await chrome.tabs.update(tabId, { url: request.profileUrl });
@@ -188,19 +218,30 @@ export async function sendLinkedInMessage(request: SendRequest): Promise<SendOut
 
     const landedUrl = (await chrome.tabs.get(tabId)).url ?? '';
     if (CHECKPOINT_URLS.test(landedUrl)) {
-      return await finish({ ok: false, reason: 'LinkedIn redirected to a security check — not sending today.' });
+      outcome = { ok: false, reason: 'LinkedIn redirected to a security check — not sending today.' };
+      return await finish(outcome);
     }
 
-    const outcome = await driveCompose(tabId, request.body);
+    outcome = await driveCompose(tabId, request.body);
     return await finish(outcome);
   } catch (error) {
-    return await finish({ ok: false, reason: (error as Error).message });
+    outcome = { ok: false, reason: (error as Error).message };
+    return await finish(outcome);
   } finally {
     sending = false;
     if (windowId !== undefined) {
-      // A short beat so the send settles before the window vanishes.
-      await wait(1500);
-      await chrome.windows.remove(windowId).catch(() => {});
+      if (outcome?.ok) {
+        // A short beat so the send settles before the window vanishes.
+        await wait(1500);
+        await chrome.windows.remove(windowId).catch(() => {});
+      } else {
+        // Leave the evidence on screen: the user sees exactly which popup or
+        // page state blocked the send instead of a vanishing window.
+        if (tabIdForBadge !== undefined) {
+          await showWorkerBadge(tabIdForBadge, `Koretex · Could not send: ${outcome?.reason ?? 'unknown'}`);
+        }
+        await chrome.windows.update(windowId, { focused: true }).catch(() => {});
+      }
     }
   }
 }
