@@ -31,64 +31,16 @@ const logger = createLogger('taskWindow');
  */
 
 let agentWindowId: number | null = null;
-let viewerWindowId: number | null = null;
-
-/** Injected by index.ts: is any side panel already connected? If so, the
- *  trace is already visible there and the popup viewer is redundant (live
- *  complaint 2026-07-27: two identical trace panels side by side). */
-let panelProbe: () => boolean = () => false;
-export function setPanelProbe(probe: () => boolean): void {
-  panelProbe = probe;
-}
 const sessionTabs = new Map<string, { windowId: number; tabId: number }>();
 
 chrome.windows.onRemoved.addListener(windowId => {
   if (windowId === agentWindowId) {
     agentWindowId = null;
-    // The agent window is gone — its companion trace viewer has nothing to
-    // narrate; close it too
-    if (viewerWindowId !== null) {
-      chrome.windows.remove(viewerWindowId).catch(() => {});
-      viewerWindowId = null;
-    }
   }
-  if (windowId === viewerWindowId) viewerWindowId = null;
   for (const [sessionId, entry] of sessionTabs) {
     if (entry.windowId === windowId) sessionTabs.delete(sessionId);
   }
 });
-
-/**
- * Companion TRACE VIEWER: the panel page in a small popup window docked to
- * the agent window's right edge. chrome.sidePanel.open() refuses to run
- * without a user gesture (confirmed live 2026-07-20 — the panel never
- * opened), so the trace gets its own popup instead: execution events
- * broadcast to every connected panel (index.ts), and this one is always
- * there to show them next to the tabs being driven.
- */
-async function ensureTraceViewer(agentWin: chrome.windows.Window): Promise<void> {
-  if (panelProbe()) return;
-  if (viewerWindowId !== null) {
-    const alive = await chrome.windows.get(viewerWindowId).catch(() => null);
-    if (alive) return;
-    viewerWindowId = null;
-  }
-  const viewer = await chrome.windows
-    .create({
-      url: chrome.runtime.getURL('side-panel/index.html'),
-      type: 'popup',
-      focused: false,
-      width: 420,
-      height: agentWin.height ?? 900,
-      left: (agentWin.left ?? 0) + (agentWin.width ?? 1290),
-      top: agentWin.top ?? 0,
-    })
-    .catch(error => {
-      logger.warning('could not open the trace viewer window', error);
-      return null;
-    });
-  if (viewer?.id !== undefined) viewerWindowId = viewer.id;
-}
 
 export type TaskTabAcquisition = { tabId: number; created: 'window' | 'tab' | 'reused' };
 
@@ -139,7 +91,6 @@ export async function acquireTaskTab(sessionId: string): Promise<TaskTabAcquisit
       if (tab?.id !== undefined) {
         sessionTabs.set(sessionId, { windowId: agentWindowId, tabId: tab.id });
         await surface(agentWindowId);
-        await ensureTraceViewer(win);
         return { tabId: tab.id, created: 'tab' };
       }
     }
@@ -157,6 +108,5 @@ export async function acquireTaskTab(sessionId: string): Promise<TaskTabAcquisit
   if (win?.id === undefined || tabId === undefined) return null;
   agentWindowId = win.id;
   sessionTabs.set(sessionId, { windowId: win.id, tabId });
-  await ensureTraceViewer(win);
   return { tabId, created: 'window' };
 }
