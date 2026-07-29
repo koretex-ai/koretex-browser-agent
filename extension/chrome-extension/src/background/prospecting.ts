@@ -268,7 +268,7 @@ export async function runSitting(count: number): Promise<string> {
       return `Paused for today: ${lease.haltReason ?? 'unusual page seen'}`;
     }
     if (lease.outOfCoins) {
-      const message = 'Out of coins — top up to read more profiles.';
+      const message = 'Out of credits — top up to read more profiles.';
       await setProgress({ running: false, message });
       return message;
     }

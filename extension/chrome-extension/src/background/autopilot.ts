@@ -86,7 +86,7 @@ async function schedule(when: number): Promise<void> {
 
 /** Summaries that mean "today is over" rather than "take a break". */
 const DAY_OVER =
-  /(paused for today|stopped for today|nothing to visit|queue is empty|limit is reached|out of coins)/i;
+  /(paused for today|stopped for today|nothing to visit|queue is empty|limit is reached|out of (?:coins|credits))/i;
 /** Summaries that mean autopilot cannot usefully continue at all. */
 const DEAD = /(no account connected)/i;
 
